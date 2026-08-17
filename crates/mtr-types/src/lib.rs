@@ -13,7 +13,12 @@ pub struct MutantId(pub u32);
 pub struct Mutant {
     pub id: MutantId,
     pub operator: String,
+    /// Exact span to replace for a direct text substitution.
     pub span: Span,
+    /// Nearest span that's a self-contained expression, safe to wrap in a
+    /// runtime `cond ? mutated : original` switch. Equal to `span`
+    /// when the mutant span already is one (e.g. a boolean literal).
+    pub enclosing_span: Span,
     pub original: String,
     pub replacement: String,
 }

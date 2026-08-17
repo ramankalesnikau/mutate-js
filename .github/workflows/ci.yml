@@ -13,6 +13,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      # naive_vs_switch (mtr-cli) shells out to these fixtures' own jest/vitest
+      - working-directory: fixtures/naive-jest-demo
+        run: npm install
+      - working-directory: fixtures/naive-vitest-demo
+        run: npm install
       - run: cargo build --workspace
       - run: cargo test --workspace
 

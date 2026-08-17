@@ -288,6 +288,7 @@ version = "0.0.1"
 dependencies = [
  "clap",
  "glob",
+ "mtr-instrument",
  "mtr-mutators",
  "mtr-runner-jest",
  "mtr-runner-vitest",
@@ -306,6 +307,8 @@ version = "0.0.1"
 name = "mtr-instrument"
 version = "0.0.1"
 dependencies = [
+ "mtr-mutators",
+ "mtr-types",
  "oxc_allocator",
  "oxc_ast",
  "oxc_codegen",
@@ -339,6 +342,7 @@ dependencies = [
 name = "mtr-runner-jest"
 version = "0.0.1"
 dependencies = [
+ "mtr-instrument",
  "mtr-test-runner-api",
  "mtr-types",
  "serde",
@@ -350,6 +354,7 @@ dependencies = [
 name = "mtr-runner-vitest"
 version = "0.0.1"
 dependencies = [
+ "mtr-instrument",
  "mtr-test-runner-api",
  "mtr-types",
  "serde",

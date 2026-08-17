@@ -5,8 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+mtr-types.workspace = true
 oxc_allocator = "0.144.0"
 oxc_ast = "0.144.0"
 oxc_codegen = "0.144.0"
 oxc_parser = "0.144.0"
 oxc_span = "0.144.0"
+
+[dev-dependencies]
+mtr-mutators.workspace = true

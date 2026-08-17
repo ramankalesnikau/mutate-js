@@ -9,6 +9,7 @@ use oxc_syntax::operator::BinaryOperator;
 pub struct MutantCandidate {
     pub operator: &'static str,
     pub span: Span,
+    pub enclosing_span: Span,
     pub original: String,
     pub replacement: String,
 }
@@ -53,6 +54,7 @@ impl Mutator for ArithmeticOperatorMutator {
         vec![MutantCandidate {
             operator: self.name(),
             span: operator_span(expr, source),
+            enclosing_span: Span { start: expr.span.start, end: expr.span.end },
             original: expr.operator.as_str().to_string(),
             replacement: replacement.to_string(),
         }]
@@ -77,6 +79,7 @@ impl Mutator for EqualityOperatorMutator {
         vec![MutantCandidate {
             operator: self.name(),
             span: operator_span(expr, source),
+            enclosing_span: Span { start: expr.span.start, end: expr.span.end },
             original: expr.operator.as_str().to_string(),
             replacement: replacement.to_string(),
         }]
@@ -94,6 +97,7 @@ impl Mutator for BooleanLiteralMutator {
         vec![MutantCandidate {
             operator: self.name(),
             span: Span { start: lit.span.start, end: lit.span.end },
+            enclosing_span: Span { start: lit.span.start, end: lit.span.end },
             original: lit.value.to_string(),
             replacement: (!lit.value).to_string(),
         }]
@@ -126,6 +130,7 @@ impl<'m, 's> MutantScanner<'m, 's> {
                 id: MutantId(self.next_id),
                 operator: c.operator.to_string(),
                 span: c.span,
+                enclosing_span: c.enclosing_span,
                 original: c.original,
                 replacement: c.replacement,
             });

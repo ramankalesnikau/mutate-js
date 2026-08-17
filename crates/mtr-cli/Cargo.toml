@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 mtr-types.workspace = true
 mtr-mutators.workspace = true
+mtr-instrument.workspace = true
 mtr-test-runner-api.workspace = true
 mtr-runner-jest.workspace = true
 mtr-runner-vitest.workspace = true

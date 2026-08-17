@@ -5,8 +5,9 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use mtr_instrument::ACTIVE_MUTANT_ENV_VAR;
 use mtr_test_runner_api::TestRunner;
-use mtr_types::MutantStatus;
+use mtr_types::{MutantId, MutantStatus};
 use serde::Deserialize;
 use wait_timeout::ChildExt;
 
@@ -27,16 +28,17 @@ impl JestRunner {
 }
 
 impl TestRunner for JestRunner {
-    /// Runs the whole test suite once and classifies the result. Naive: no
-    /// coverage-based test filtering yet — that's a later stage.
-    fn run(&self) -> MutantStatus {
-        let mut child = match Command::new("npx")
-            .args(["jest", "--json", "--silent"])
+    fn run(&self, active_mutant: Option<MutantId>) -> MutantStatus {
+        let mut cmd = Command::new("npx");
+        cmd.args(["jest", "--json", "--silent"])
             .current_dir(&self.project_dir)
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-        {
+            .stderr(Stdio::null());
+        if let Some(id) = active_mutant {
+            cmd.env(ACTIVE_MUTANT_ENV_VAR, id.0.to_string());
+        }
+
+        let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(_) => return MutantStatus::Error,
         };
