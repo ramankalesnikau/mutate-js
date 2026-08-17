@@ -1,0 +1,8 @@
+[package]
+name = "mtr-test-runner-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mtr-types.workspace = true

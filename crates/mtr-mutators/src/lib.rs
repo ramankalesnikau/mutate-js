@@ -3,7 +3,7 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::{BinaryExpression, BooleanLiteral};
 use oxc_ast_visit::{walk, Visit};
 use oxc_parser::Parser;
-use oxc_span::SourceType;
+use oxc_span::{GetSpan, SourceType};
 use oxc_syntax::operator::BinaryOperator;
 
 pub struct MutantCandidate {
@@ -15,12 +15,24 @@ pub struct MutantCandidate {
 
 pub trait Mutator {
     fn name(&self) -> &'static str;
-    fn discover_binary(&self, _expr: &BinaryExpression) -> Vec<MutantCandidate> {
+    fn discover_binary(&self, _expr: &BinaryExpression, _source: &str) -> Vec<MutantCandidate> {
         Vec::new()
     }
-    fn discover_boolean_literal(&self, _lit: &BooleanLiteral) -> Vec<MutantCandidate> {
+    fn discover_boolean_literal(&self, _lit: &BooleanLiteral, _source: &str) -> Vec<MutantCandidate> {
         Vec::new()
     }
+}
+
+/// `BinaryExpression::span` covers the whole `left op right` expression, not
+/// just the operator token, so applying a mutant means finding the operator's
+/// own span within the gap between the operands.
+fn operator_span(expr: &BinaryExpression, source: &str) -> Span {
+    let gap_start = expr.left.span().end as usize;
+    let gap_end = expr.right.span().start as usize;
+    let gap = &source[gap_start..gap_end];
+    let op = expr.operator.as_str();
+    let offset = gap.find(op).expect("operator token must appear in the gap between operands");
+    Span { start: (gap_start + offset) as u32, end: (gap_start + offset + op.len()) as u32 }
 }
 
 pub struct ArithmeticOperatorMutator;
@@ -30,7 +42,7 @@ impl Mutator for ArithmeticOperatorMutator {
         "ArithmeticOperator"
     }
 
-    fn discover_binary(&self, expr: &BinaryExpression) -> Vec<MutantCandidate> {
+    fn discover_binary(&self, expr: &BinaryExpression, source: &str) -> Vec<MutantCandidate> {
         let replacement = match expr.operator {
             BinaryOperator::Addition => "-",
             BinaryOperator::Subtraction => "+",
@@ -40,7 +52,7 @@ impl Mutator for ArithmeticOperatorMutator {
         };
         vec![MutantCandidate {
             operator: self.name(),
-            span: Span { start: expr.span.start, end: expr.span.end },
+            span: operator_span(expr, source),
             original: expr.operator.as_str().to_string(),
             replacement: replacement.to_string(),
         }]
@@ -54,7 +66,7 @@ impl Mutator for EqualityOperatorMutator {
         "EqualityOperator"
     }
 
-    fn discover_binary(&self, expr: &BinaryExpression) -> Vec<MutantCandidate> {
+    fn discover_binary(&self, expr: &BinaryExpression, source: &str) -> Vec<MutantCandidate> {
         let replacement = match expr.operator {
             BinaryOperator::Equality => "!=",
             BinaryOperator::Inequality => "==",
@@ -64,7 +76,7 @@ impl Mutator for EqualityOperatorMutator {
         };
         vec![MutantCandidate {
             operator: self.name(),
-            span: Span { start: expr.span.start, end: expr.span.end },
+            span: operator_span(expr, source),
             original: expr.operator.as_str().to_string(),
             replacement: replacement.to_string(),
         }]
@@ -78,7 +90,7 @@ impl Mutator for BooleanLiteralMutator {
         "BooleanLiteral"
     }
 
-    fn discover_boolean_literal(&self, lit: &BooleanLiteral) -> Vec<MutantCandidate> {
+    fn discover_boolean_literal(&self, lit: &BooleanLiteral, _source: &str) -> Vec<MutantCandidate> {
         vec![MutantCandidate {
             operator: self.name(),
             span: Span { start: lit.span.start, end: lit.span.end },
@@ -96,15 +108,16 @@ fn default_mutators() -> Vec<Box<dyn Mutator>> {
     ]
 }
 
-struct MutantScanner<'m> {
+struct MutantScanner<'m, 's> {
     mutators: &'m [Box<dyn Mutator>],
+    source: &'s str,
     next_id: u32,
     mutants: Vec<Mutant>,
 }
 
-impl<'m> MutantScanner<'m> {
-    fn new(mutators: &'m [Box<dyn Mutator>]) -> Self {
-        Self { mutators, next_id: 0, mutants: Vec::new() }
+impl<'m, 's> MutantScanner<'m, 's> {
+    fn new(mutators: &'m [Box<dyn Mutator>], source: &'s str) -> Self {
+        Self { mutators, source, next_id: 0, mutants: Vec::new() }
     }
 
     fn push(&mut self, candidates: Vec<MutantCandidate>) {
@@ -121,11 +134,11 @@ impl<'m> MutantScanner<'m> {
     }
 }
 
-impl<'ast, 'm> Visit<'ast> for MutantScanner<'m> {
+impl<'ast, 'm, 's> Visit<'ast> for MutantScanner<'m, 's> {
     fn visit_binary_expression(&mut self, it: &BinaryExpression<'ast>) {
         let mutators = self.mutators;
         for m in mutators {
-            let candidates = m.discover_binary(it);
+            let candidates = m.discover_binary(it, self.source);
             self.push(candidates);
         }
         walk::walk_binary_expression(self, it);
@@ -134,7 +147,7 @@ impl<'ast, 'm> Visit<'ast> for MutantScanner<'m> {
     fn visit_boolean_literal(&mut self, it: &BooleanLiteral) {
         let mutators = self.mutators;
         for m in mutators {
-            let candidates = m.discover_boolean_literal(it);
+            let candidates = m.discover_boolean_literal(it, self.source);
             self.push(candidates);
         }
     }
@@ -146,9 +159,17 @@ pub fn scan_source(source: &str, source_type: SourceType) -> Vec<Mutant> {
     let allocator = Allocator::default();
     let ret = Parser::new(&allocator, source, source_type).parse();
     let mutators = default_mutators();
-    let mut scanner = MutantScanner::new(&mutators);
+    let mut scanner = MutantScanner::new(&mutators, source);
     scanner.visit_program(&ret.program);
     scanner.mutants
+}
+
+/// Replace `mutant`'s span in `source` with its replacement text — the exact
+/// text substitution that reproduces the mutant when the file is written out.
+pub fn apply_mutant(source: &str, mutant: &Mutant) -> String {
+    let start = mutant.span.start as usize;
+    let end = mutant.span.end as usize;
+    format!("{}{}{}", &source[..start], mutant.replacement, &source[end..])
 }
 
 #[cfg(test)]
@@ -188,5 +209,13 @@ mod tests {
         let mutants = scan_source(source, SourceType::ts());
         assert_eq!(mutants[0].id, MutantId(0));
         assert_eq!(mutants[1].id, MutantId(1));
+    }
+
+    #[test]
+    fn apply_mutant_only_replaces_the_operator_token() {
+        let source = "const x = alpha + beta;";
+        let mutants = scan_source(source, SourceType::ts());
+        let mutated = apply_mutant(source, &mutants[0]);
+        assert_eq!(mutated, "const x = alpha - beta;");
     }
 }

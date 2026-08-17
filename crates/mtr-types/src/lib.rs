@@ -17,3 +17,17 @@ pub struct Mutant {
     pub original: String,
     pub replacement: String,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum MutantStatus {
+    Killed,
+    Survived,
+    Timeout,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MutantResult {
+    pub mutant: Mutant,
+    pub status: MutantStatus,
+}
