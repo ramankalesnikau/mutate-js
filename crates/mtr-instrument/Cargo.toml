@@ -1,0 +1,12 @@
+[package]
+name = "mtr-instrument"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+oxc_allocator = "0.144.0"
+oxc_ast = "0.144.0"
+oxc_codegen = "0.144.0"
+oxc_parser = "0.144.0"
+oxc_span = "0.144.0"
