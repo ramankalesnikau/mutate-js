@@ -1,0 +1,192 @@
+use mtr_types::{Mutant, MutantId, Span};
+use oxc_allocator::Allocator;
+use oxc_ast::ast::{BinaryExpression, BooleanLiteral};
+use oxc_ast_visit::{walk, Visit};
+use oxc_parser::Parser;
+use oxc_span::SourceType;
+use oxc_syntax::operator::BinaryOperator;
+
+pub struct MutantCandidate {
+    pub operator: &'static str,
+    pub span: Span,
+    pub original: String,
+    pub replacement: String,
+}
+
+pub trait Mutator {
+    fn name(&self) -> &'static str;
+    fn discover_binary(&self, _expr: &BinaryExpression) -> Vec<MutantCandidate> {
+        Vec::new()
+    }
+    fn discover_boolean_literal(&self, _lit: &BooleanLiteral) -> Vec<MutantCandidate> {
+        Vec::new()
+    }
+}
+
+pub struct ArithmeticOperatorMutator;
+
+impl Mutator for ArithmeticOperatorMutator {
+    fn name(&self) -> &'static str {
+        "ArithmeticOperator"
+    }
+
+    fn discover_binary(&self, expr: &BinaryExpression) -> Vec<MutantCandidate> {
+        let replacement = match expr.operator {
+            BinaryOperator::Addition => "-",
+            BinaryOperator::Subtraction => "+",
+            BinaryOperator::Multiplication => "/",
+            BinaryOperator::Division => "*",
+            _ => return Vec::new(),
+        };
+        vec![MutantCandidate {
+            operator: self.name(),
+            span: Span { start: expr.span.start, end: expr.span.end },
+            original: expr.operator.as_str().to_string(),
+            replacement: replacement.to_string(),
+        }]
+    }
+}
+
+pub struct EqualityOperatorMutator;
+
+impl Mutator for EqualityOperatorMutator {
+    fn name(&self) -> &'static str {
+        "EqualityOperator"
+    }
+
+    fn discover_binary(&self, expr: &BinaryExpression) -> Vec<MutantCandidate> {
+        let replacement = match expr.operator {
+            BinaryOperator::Equality => "!=",
+            BinaryOperator::Inequality => "==",
+            BinaryOperator::StrictEquality => "!==",
+            BinaryOperator::StrictInequality => "===",
+            _ => return Vec::new(),
+        };
+        vec![MutantCandidate {
+            operator: self.name(),
+            span: Span { start: expr.span.start, end: expr.span.end },
+            original: expr.operator.as_str().to_string(),
+            replacement: replacement.to_string(),
+        }]
+    }
+}
+
+pub struct BooleanLiteralMutator;
+
+impl Mutator for BooleanLiteralMutator {
+    fn name(&self) -> &'static str {
+        "BooleanLiteral"
+    }
+
+    fn discover_boolean_literal(&self, lit: &BooleanLiteral) -> Vec<MutantCandidate> {
+        vec![MutantCandidate {
+            operator: self.name(),
+            span: Span { start: lit.span.start, end: lit.span.end },
+            original: lit.value.to_string(),
+            replacement: (!lit.value).to_string(),
+        }]
+    }
+}
+
+fn default_mutators() -> Vec<Box<dyn Mutator>> {
+    vec![
+        Box::new(ArithmeticOperatorMutator),
+        Box::new(EqualityOperatorMutator),
+        Box::new(BooleanLiteralMutator),
+    ]
+}
+
+struct MutantScanner<'m> {
+    mutators: &'m [Box<dyn Mutator>],
+    next_id: u32,
+    mutants: Vec<Mutant>,
+}
+
+impl<'m> MutantScanner<'m> {
+    fn new(mutators: &'m [Box<dyn Mutator>]) -> Self {
+        Self { mutators, next_id: 0, mutants: Vec::new() }
+    }
+
+    fn push(&mut self, candidates: Vec<MutantCandidate>) {
+        for c in candidates {
+            self.mutants.push(Mutant {
+                id: MutantId(self.next_id),
+                operator: c.operator.to_string(),
+                span: c.span,
+                original: c.original,
+                replacement: c.replacement,
+            });
+            self.next_id += 1;
+        }
+    }
+}
+
+impl<'ast, 'm> Visit<'ast> for MutantScanner<'m> {
+    fn visit_binary_expression(&mut self, it: &BinaryExpression<'ast>) {
+        let mutators = self.mutators;
+        for m in mutators {
+            let candidates = m.discover_binary(it);
+            self.push(candidates);
+        }
+        walk::walk_binary_expression(self, it);
+    }
+
+    fn visit_boolean_literal(&mut self, it: &BooleanLiteral) {
+        let mutators = self.mutators;
+        for m in mutators {
+            let candidates = m.discover_boolean_literal(it);
+            self.push(candidates);
+        }
+    }
+}
+
+/// Parse `source` and return every mutant the built-in operator catalog
+/// finds, in source order.
+pub fn scan_source(source: &str, source_type: SourceType) -> Vec<Mutant> {
+    let allocator = Allocator::default();
+    let ret = Parser::new(&allocator, source, source_type).parse();
+    let mutators = default_mutators();
+    let mut scanner = MutantScanner::new(&mutators);
+    scanner.visit_program(&ret.program);
+    scanner.mutants
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_arithmetic_equality_and_boolean_mutants() {
+        let source = "const x = a + b; const y = a === b; const z = true;";
+        let mutants = scan_source(source, SourceType::ts());
+
+        assert_eq!(mutants.len(), 3);
+
+        assert_eq!(mutants[0].operator, "ArithmeticOperator");
+        assert_eq!(mutants[0].original, "+");
+        assert_eq!(mutants[0].replacement, "-");
+
+        assert_eq!(mutants[1].operator, "EqualityOperator");
+        assert_eq!(mutants[1].original, "===");
+        assert_eq!(mutants[1].replacement, "!==");
+
+        assert_eq!(mutants[2].operator, "BooleanLiteral");
+        assert_eq!(mutants[2].original, "true");
+        assert_eq!(mutants[2].replacement, "false");
+    }
+
+    #[test]
+    fn ignores_operators_outside_the_catalog() {
+        let source = "const x = a < b && a > b;";
+        let mutants = scan_source(source, SourceType::ts());
+        assert!(mutants.is_empty());
+    }
+
+    #[test]
+    fn assigns_stable_increasing_ids() {
+        let source = "const a = true; const b = false;";
+        let mutants = scan_source(source, SourceType::ts());
+        assert_eq!(mutants[0].id, MutantId(0));
+        assert_eq!(mutants[1].id, MutantId(1));
+    }
+}
