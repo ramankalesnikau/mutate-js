@@ -1,0 +1,19 @@
+{
+  "name": "mutate-js",
+  "version": "0.0.1",
+  "description": "Rust-native mutation testing for JS/TS — original engine, own report format, oxc-based instrumentation.",
+  "license": "MIT",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "binaryName": "mutate-js",
+    "packageName": "mutate-js"
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "build:debug": "napi build --platform"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2"
+  }
+}

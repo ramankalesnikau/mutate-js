@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    name: cargo build & test (workspace)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+
+  napi-smoke-test:
+    name: npm package smoke test (native binding)
+    runs-on: macos-latest
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - working-directory: crates/mtr-napi
+        run: npm install
+      - working-directory: crates/mtr-napi
+        run: npm run build:debug
+      - working-directory: crates/mtr-napi
+        run: node -e "const m = require('./index.js'); if (typeof m.hello() !== 'string') throw new Error('napi binding smoke test failed');"
