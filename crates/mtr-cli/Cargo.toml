@@ -11,6 +11,7 @@ mtr-instrument.workspace = true
 mtr-test-runner-api.workspace = true
 mtr-runner-jest.workspace = true
 mtr-runner-vitest.workspace = true
+mtr-cache.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 oxc_span = "0.144.0"

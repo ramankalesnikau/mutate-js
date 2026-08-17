@@ -1,7 +1,9 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Parser as ClapParser, Subcommand, ValueEnum};
+use mtr_cache::{changed_line_ranges, mutant_signature, mutant_touches_changed_lines, MutantCache};
 use mtr_instrument::switch_instrument;
 use mtr_mutators::apply_mutant;
 use mtr_runner_jest::JestRunner;
@@ -36,6 +38,15 @@ enum Command {
         /// resolver), instead of the whole suite.
         #[arg(long)]
         related_tests: bool,
+        /// Path to a JSON cache file. When set, mutants whose enclosing code
+        /// is unchanged since the last recorded run reuse that result
+        /// instead of being re-tested.
+        #[arg(long)]
+        cache: Option<String>,
+        /// Only test mutants touching lines changed since this git ref
+        /// (e.g. `origin/main`). Requires `file` to be inside a git repo.
+        #[arg(long)]
+        changed_since: Option<String>,
     },
     /// Like `run`, but embeds every mutant in one instrumented file and
     /// switches between them via an env var instead of rewriting the file
@@ -50,6 +61,10 @@ enum Command {
         timeout_secs: u64,
         #[arg(long)]
         related_tests: bool,
+        #[arg(long)]
+        cache: Option<String>,
+        #[arg(long)]
+        changed_since: Option<String>,
     },
 }
 
@@ -69,11 +84,11 @@ fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Scan { glob } => scan(&glob),
-        Command::Run { file, project, runner, timeout_secs, related_tests } => {
-            run(&file, &project, runner, timeout_secs, related_tests)
+        Command::Run { file, project, runner, timeout_secs, related_tests, cache, changed_since } => {
+            run(&file, &project, runner, timeout_secs, related_tests, cache, changed_since)
         }
-        Command::Switch { file, project, runner, timeout_secs, related_tests } => {
-            switch(&file, &project, runner, timeout_secs, related_tests)
+        Command::Switch { file, project, runner, timeout_secs, related_tests, cache, changed_since } => {
+            switch(&file, &project, runner, timeout_secs, related_tests, cache, changed_since)
         }
     }
 }
@@ -94,22 +109,59 @@ fn scan(pattern: &str) {
     println!("{}", serde_json::to_string_pretty(&results).unwrap());
 }
 
-fn run(file: &str, project: &str, runner: RunnerKind, timeout_secs: u64, related_tests: bool) {
+/// Drops mutants that don't touch any line changed since `changed_since`
+/// (when set); a no-op otherwise. Applied before caching/instrumentation so
+/// out-of-scope mutants never even get tested.
+fn scope_to_diff(
+    mutants: Vec<Mutant>,
+    project: &str,
+    file: &Path,
+    original: &str,
+    changed_since: Option<&str>,
+) -> Vec<Mutant> {
+    let Some(git_ref) = changed_since else { return mutants };
+    let changed = changed_line_ranges(Path::new(project), git_ref, file);
+    mutants.into_iter().filter(|m| mutant_touches_changed_lines(m, original, &changed)).collect()
+}
+
+fn run(
+    file: &str,
+    project: &str,
+    runner: RunnerKind,
+    timeout_secs: u64,
+    related_tests: bool,
+    cache_path: Option<String>,
+    changed_since: Option<String>,
+) {
     let file_path = PathBuf::from(file);
     let source_type = SourceType::from_path(&file_path).unwrap_or_default();
     let original = std::fs::read_to_string(&file_path)
         .unwrap_or_else(|e| panic!("failed to read {file}: {e}"));
-    let mutants = mtr_mutators::scan_source(&original, source_type);
-    let timeout = Duration::from_secs(timeout_secs);
-    // Runners spawn with `current_dir(project)`, so a relative `file_path`
-    // (relative to *our* cwd) must be made absolute before being handed to
-    // them — otherwise it resolves against the wrong directory.
+    // Runners (and `git diff`) spawn with `current_dir(project)`, so a
+    // relative `file_path` (relative to *our* cwd) must be made absolute
+    // before being handed to them — otherwise it resolves against the wrong
+    // directory.
     let absolute_file = std::fs::canonicalize(&file_path)
         .unwrap_or_else(|e| panic!("failed to resolve {file}: {e}"));
     let related_to_file = related_tests.then_some(absolute_file.as_path());
 
+    let mutants = mtr_mutators::scan_source(&original, source_type);
+    let mutants =
+        scope_to_diff(mutants, project, &absolute_file, &original, changed_since.as_deref());
+    let timeout = Duration::from_secs(timeout_secs);
+
+    let mut cache = cache_path.as_deref().map(|p| MutantCache::load(Path::new(p)));
+    let mut cache_hits = 0;
+
     let mut results = Vec::new();
     for mutant in mutants {
+        let signature = mutant_signature(file, &mutant, &original);
+        if let Some(status) = cache.as_ref().and_then(|c| c.get(&signature)) {
+            cache_hits += 1;
+            results.push(MutantResult { mutant, status });
+            continue;
+        }
+
         let mutated = apply_mutant(&original, &mutant);
         let status = match runner {
             RunnerKind::Jest => run_with_file_swapped(
@@ -126,48 +178,103 @@ fn run(file: &str, project: &str, runner: RunnerKind, timeout_secs: u64, related
             ),
         }
         .unwrap_or_else(|e| panic!("failed to run mutant {}: {e}", mutant.id.0));
+        if let Some(c) = cache.as_mut() {
+            c.set(signature, status);
+        }
         results.push(MutantResult { mutant, status });
     }
 
+    save_cache_and_report(cache.as_ref(), cache_path.as_deref(), cache_hits, results.len());
     println!("{}", serde_json::to_string_pretty(&results).unwrap());
 }
 
-fn switch(file: &str, project: &str, runner: RunnerKind, timeout_secs: u64, related_tests: bool) {
+fn switch(
+    file: &str,
+    project: &str,
+    runner: RunnerKind,
+    timeout_secs: u64,
+    related_tests: bool,
+    cache_path: Option<String>,
+    changed_since: Option<String>,
+) {
     let file_path = PathBuf::from(file);
     let source_type = SourceType::from_path(&file_path).unwrap_or_default();
     let original = std::fs::read_to_string(&file_path)
         .unwrap_or_else(|e| panic!("failed to read {file}: {e}"));
-    let mutants = mtr_mutators::scan_source(&original, source_type);
-    let instrumented = switch_instrument(&original, &mutants);
-    let ids: Vec<MutantId> = mutants.iter().map(|m| m.id).collect();
-    let timeout = Duration::from_secs(timeout_secs);
     let absolute_file = std::fs::canonicalize(&file_path)
         .unwrap_or_else(|e| panic!("failed to resolve {file}: {e}"));
     let related_to_file = related_tests.then_some(absolute_file.as_path());
 
-    let statuses: Vec<(MutantId, MutantStatus)> = match runner {
-        RunnerKind::Jest => run_with_instrumented_file(
-            &file_path,
-            &instrumented,
-            &ids,
-            related_to_file,
-            &JestRunner::new(project, timeout),
-        ),
-        RunnerKind::Vitest => run_with_instrumented_file(
-            &file_path,
-            &instrumented,
-            &ids,
-            related_to_file,
-            &VitestRunner::new(project, timeout),
-        ),
+    let mutants = mtr_mutators::scan_source(&original, source_type);
+    let mutants =
+        scope_to_diff(mutants, project, &absolute_file, &original, changed_since.as_deref());
+    let timeout = Duration::from_secs(timeout_secs);
+
+    let mut cache = cache_path.as_deref().map(|p| MutantCache::load(Path::new(p)));
+
+    // Prune before instrumentation: cached mutants never get embedded in the
+    // instrumented build at all, not just skipped at run time.
+    let mut signatures: HashMap<u32, String> = HashMap::new();
+    let mut results: Vec<MutantResult> = Vec::new();
+    let mut to_test: Vec<Mutant> = Vec::new();
+    for mutant in mutants {
+        let signature = mutant_signature(file, &mutant, &original);
+        match cache.as_ref().and_then(|c| c.get(&signature)) {
+            Some(status) => results.push(MutantResult { mutant, status }),
+            None => {
+                signatures.insert(mutant.id.0, signature);
+                to_test.push(mutant);
+            }
+        }
     }
-    .unwrap_or_else(|e| panic!("failed to run instrumented file: {e}"));
+    let cache_hits = results.len();
 
-    let results: Vec<MutantResult> = mutants
-        .into_iter()
-        .zip(statuses.into_iter().map(|(_, status)| status))
-        .map(|(mutant, status)| MutantResult { mutant, status })
-        .collect();
+    if !to_test.is_empty() {
+        let instrumented = switch_instrument(&original, &to_test);
+        let ids: Vec<MutantId> = to_test.iter().map(|m| m.id).collect();
+        let statuses: Vec<(MutantId, MutantStatus)> = match runner {
+            RunnerKind::Jest => run_with_instrumented_file(
+                &file_path,
+                &instrumented,
+                &ids,
+                related_to_file,
+                &JestRunner::new(project, timeout),
+            ),
+            RunnerKind::Vitest => run_with_instrumented_file(
+                &file_path,
+                &instrumented,
+                &ids,
+                related_to_file,
+                &VitestRunner::new(project, timeout),
+            ),
+        }
+        .unwrap_or_else(|e| panic!("failed to run instrumented file: {e}"));
+        let status_by_id: HashMap<u32, MutantStatus> =
+            statuses.into_iter().map(|(id, status)| (id.0, status)).collect();
 
+        for mutant in to_test {
+            let status = status_by_id[&mutant.id.0];
+            if let Some(c) = cache.as_mut() {
+                c.set(signatures.remove(&mutant.id.0).unwrap(), status);
+            }
+            results.push(MutantResult { mutant, status });
+        }
+    }
+
+    save_cache_and_report(cache.as_ref(), cache_path.as_deref(), cache_hits, results.len());
+    results.sort_by_key(|r| r.mutant.id.0);
     println!("{}", serde_json::to_string_pretty(&results).unwrap());
+}
+
+fn save_cache_and_report(
+    cache: Option<&MutantCache>,
+    cache_path: Option<&str>,
+    hits: usize,
+    total: usize,
+) {
+    let (Some(cache), Some(path)) = (cache, cache_path) else { return };
+    cache
+        .save(Path::new(path))
+        .unwrap_or_else(|e| panic!("failed to save cache to {path}: {e}"));
+    eprintln!("cache: {hits} hit(s), {} tested", total - hits);
 }

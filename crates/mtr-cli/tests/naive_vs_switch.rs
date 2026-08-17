@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use mtr_cache::{mutant_signature, MutantCache};
 use mtr_instrument::switch_instrument;
 use mtr_mutators::apply_mutant;
 use mtr_runner_jest::JestRunner;
@@ -128,4 +129,80 @@ fn vitest_related_tests_filtering_is_real() {
         &project.join("src/greeting.js"),
         || VitestRunner::new(&project, Duration::from_secs(30)),
     );
+}
+
+#[test]
+fn cache_signature_is_reused_across_runs_for_unchanged_mutants() {
+    let _guard = FIXTURE_LOCK.lock().unwrap();
+    let project = workspace_root().join("fixtures/naive-jest-demo");
+    let file = project.join("src/math.js");
+    let cache_path = std::env::temp_dir().join(format!("mtr-cache-test-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&cache_path);
+
+    let source_type = SourceType::from_path(&file).unwrap();
+    let original = std::fs::read_to_string(&file).unwrap();
+    let mutants = mtr_mutators::scan_source(&original, source_type);
+    let file_key = file.to_str().unwrap();
+
+    let instrumented = switch_instrument(&original, &mutants);
+    let ids: Vec<_> = mutants.iter().map(|m| m.id).collect();
+    let statuses = run_with_instrumented_file(
+        &file,
+        &instrumented,
+        &ids,
+        None,
+        &JestRunner::new(&project, Duration::from_secs(30)),
+    )
+    .unwrap();
+
+    let mut cache = MutantCache::load(&cache_path);
+    for (mutant, (_, status)) in mutants.iter().zip(&statuses) {
+        cache.set(mutant_signature(file_key, mutant, &original), *status);
+    }
+    cache.save(&cache_path).unwrap();
+
+    // Reload as a fresh run would, and confirm every mutant's signature is
+    // still a hit with the correct recorded status — no test re-execution
+    // needed to know this.
+    let reloaded = MutantCache::load(&cache_path);
+    for (mutant, (_, expected_status)) in mutants.iter().zip(&statuses) {
+        let signature = mutant_signature(file_key, mutant, &original);
+        assert_eq!(
+            reloaded.get(&signature),
+            Some(*expected_status),
+            "mutant {} should be a cache hit with its previously recorded status",
+            mutant.id.0
+        );
+    }
+
+    let _ = std::fs::remove_file(&cache_path);
+}
+
+#[test]
+fn changed_since_scopes_to_only_the_modified_mutant() {
+    let _guard = FIXTURE_LOCK.lock().unwrap();
+    let project = workspace_root().join("fixtures/naive-jest-demo");
+    let file = project.join("src/math.js");
+
+    let original = std::fs::read_to_string(&file).unwrap();
+    let modified = original.replace("return a === b;", "return (a) === b;");
+    assert_ne!(original, modified, "fixture no longer contains the expected line to modify");
+    std::fs::write(&file, &modified).unwrap();
+
+    let source_type = SourceType::from_path(&file).unwrap();
+    let all_mutants = mtr_mutators::scan_source(&modified, source_type);
+    let changed = mtr_cache::changed_line_ranges(&project, "HEAD", &file);
+    let scoped: Vec<_> = all_mutants
+        .iter()
+        .filter(|m| mtr_cache::mutant_touches_changed_lines(m, &modified, &changed))
+        .collect();
+
+    std::fs::write(&file, &original).unwrap();
+
+    assert_eq!(
+        scoped.len(),
+        1,
+        "only the mutant on the changed line should survive diff scoping, got {scoped:#?}"
+    );
+    assert_eq!(scoped[0].operator, "EqualityOperator");
 }
