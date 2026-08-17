@@ -2,15 +2,21 @@ use std::path::Path;
 
 use mtr_types::{MutantId, MutantStatus};
 
-/// Deliberately minimal for now: one whole-suite run, no coverage-aware
-/// dry-run/mutant-run split yet — that split only earns its place once
-/// coverage-based test filtering exists (a later stage).
-///
 /// `active_mutant`: `None` runs the suite unmutated (or, against an
 /// instrumented file, with every mutant switched off); `Some(id)` selects
 /// which mutant is switched on.
+///
+/// `related_to_file`: `None` runs the whole suite; `Some(path)` asks the
+/// runner's own dependency resolver to run only tests related to that file
+/// (Jest's `--findRelatedTests`, Vitest's `related` subcommand).
+#[derive(Clone, Copy)]
+pub struct RunOptions<'a> {
+    pub active_mutant: Option<MutantId>,
+    pub related_to_file: Option<&'a Path>,
+}
+
 pub trait TestRunner {
-    fn run(&self, active_mutant: Option<MutantId>) -> MutantStatus;
+    fn run(&self, opts: RunOptions) -> MutantStatus;
 }
 
 /// Overwrites `file`, runs `runner` once, then restores the original content —
@@ -18,12 +24,14 @@ pub trait TestRunner {
 pub fn run_with_file_swapped(
     file: &Path,
     mutated_source: &str,
+    related_to_file: Option<&Path>,
     runner: &(impl TestRunner + std::panic::RefUnwindSafe),
 ) -> std::io::Result<MutantStatus> {
     let original = std::fs::read_to_string(file)?;
     std::fs::write(file, mutated_source)?;
 
-    let result = std::panic::catch_unwind(|| runner.run(None));
+    let opts = RunOptions { active_mutant: None, related_to_file };
+    let result = std::panic::catch_unwind(|| runner.run(opts));
 
     std::fs::write(file, &original)?;
 
@@ -40,13 +48,20 @@ pub fn run_with_instrumented_file(
     file: &Path,
     instrumented_source: &str,
     mutant_ids: &[MutantId],
+    related_to_file: Option<&Path>,
     runner: &(impl TestRunner + std::panic::RefUnwindSafe),
 ) -> std::io::Result<Vec<(MutantId, MutantStatus)>> {
     let original = std::fs::read_to_string(file)?;
     std::fs::write(file, instrumented_source)?;
 
     let result = std::panic::catch_unwind(|| {
-        mutant_ids.iter().map(|&id| (id, runner.run(Some(id)))).collect::<Vec<_>>()
+        mutant_ids
+            .iter()
+            .map(|&id| {
+                let opts = RunOptions { active_mutant: Some(id), related_to_file };
+                (id, runner.run(opts))
+            })
+            .collect::<Vec<_>>()
     });
 
     std::fs::write(file, &original)?;

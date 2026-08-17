@@ -6,8 +6,8 @@ use std::thread;
 use std::time::Duration;
 
 use mtr_instrument::ACTIVE_MUTANT_ENV_VAR;
-use mtr_test_runner_api::TestRunner;
-use mtr_types::{MutantId, MutantStatus};
+use mtr_test_runner_api::{RunOptions, TestRunner};
+use mtr_types::MutantStatus;
 use serde::Deserialize;
 use wait_timeout::ChildExt;
 
@@ -28,13 +28,22 @@ impl VitestRunner {
 }
 
 impl TestRunner for VitestRunner {
-    fn run(&self, active_mutant: Option<MutantId>) -> MutantStatus {
+    fn run(&self, opts: RunOptions) -> MutantStatus {
         let mut cmd = Command::new("npx");
-        cmd.args(["vitest", "run", "--reporter=json"])
+        cmd.arg("vitest");
+        match opts.related_to_file {
+            Some(path) => {
+                cmd.arg("related").arg(path).arg("--run");
+            }
+            None => {
+                cmd.arg("run");
+            }
+        }
+        cmd.arg("--reporter=json")
             .current_dir(&self.project_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        if let Some(id) = active_mutant {
+        if let Some(id) = opts.active_mutant {
             cmd.env(ACTIVE_MUTANT_ENV_VAR, id.0.to_string());
         }
 
@@ -52,9 +61,9 @@ impl TestRunner for VitestRunner {
         });
 
         match child.wait_timeout(self.timeout) {
-            Ok(Some(_)) => {
+            Ok(Some(status)) => {
                 let stdout = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
-                classify(&stdout)
+                classify(&stdout, status.success())
             }
             Ok(None) => {
                 let _ = child.kill();
@@ -66,10 +75,15 @@ impl TestRunner for VitestRunner {
     }
 }
 
-fn classify(stdout: &str) -> MutantStatus {
+/// `exit_success`: falls back on when stdout isn't valid JSON at all — e.g.
+/// zero related tests matched, which prints a plain-text message instead of
+/// a JSON reporter result. A clean process exit with unparseable output means
+/// nothing could have killed the mutant, not a real failure.
+fn classify(stdout: &str, exit_success: bool) -> MutantStatus {
     match serde_json::from_str::<VitestSummary>(stdout) {
         Ok(summary) if summary.success => MutantStatus::Survived,
         Ok(_) => MutantStatus::Killed,
+        Err(_) if exit_success => MutantStatus::Survived,
         Err(_) => MutantStatus::Error,
     }
 }

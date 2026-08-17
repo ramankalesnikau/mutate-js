@@ -32,6 +32,10 @@ enum Command {
         runner: RunnerKind,
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
+        /// Only run tests related to `file` (the runner's own dependency
+        /// resolver), instead of the whole suite.
+        #[arg(long)]
+        related_tests: bool,
     },
     /// Like `run`, but embeds every mutant in one instrumented file and
     /// switches between them via an env var instead of rewriting the file
@@ -44,6 +48,8 @@ enum Command {
         runner: RunnerKind,
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
+        #[arg(long)]
+        related_tests: bool,
     },
 }
 
@@ -63,11 +69,11 @@ fn main() {
     let cli = Cli::parse();
     match cli.command {
         Command::Scan { glob } => scan(&glob),
-        Command::Run { file, project, runner, timeout_secs } => {
-            run(&file, &project, runner, timeout_secs)
+        Command::Run { file, project, runner, timeout_secs, related_tests } => {
+            run(&file, &project, runner, timeout_secs, related_tests)
         }
-        Command::Switch { file, project, runner, timeout_secs } => {
-            switch(&file, &project, runner, timeout_secs)
+        Command::Switch { file, project, runner, timeout_secs, related_tests } => {
+            switch(&file, &project, runner, timeout_secs, related_tests)
         }
     }
 }
@@ -88,24 +94,36 @@ fn scan(pattern: &str) {
     println!("{}", serde_json::to_string_pretty(&results).unwrap());
 }
 
-fn run(file: &str, project: &str, runner: RunnerKind, timeout_secs: u64) {
+fn run(file: &str, project: &str, runner: RunnerKind, timeout_secs: u64, related_tests: bool) {
     let file_path = PathBuf::from(file);
     let source_type = SourceType::from_path(&file_path).unwrap_or_default();
     let original = std::fs::read_to_string(&file_path)
         .unwrap_or_else(|e| panic!("failed to read {file}: {e}"));
     let mutants = mtr_mutators::scan_source(&original, source_type);
     let timeout = Duration::from_secs(timeout_secs);
+    // Runners spawn with `current_dir(project)`, so a relative `file_path`
+    // (relative to *our* cwd) must be made absolute before being handed to
+    // them — otherwise it resolves against the wrong directory.
+    let absolute_file = std::fs::canonicalize(&file_path)
+        .unwrap_or_else(|e| panic!("failed to resolve {file}: {e}"));
+    let related_to_file = related_tests.then_some(absolute_file.as_path());
 
     let mut results = Vec::new();
     for mutant in mutants {
         let mutated = apply_mutant(&original, &mutant);
         let status = match runner {
-            RunnerKind::Jest => {
-                run_with_file_swapped(&file_path, &mutated, &JestRunner::new(project, timeout))
-            }
-            RunnerKind::Vitest => {
-                run_with_file_swapped(&file_path, &mutated, &VitestRunner::new(project, timeout))
-            }
+            RunnerKind::Jest => run_with_file_swapped(
+                &file_path,
+                &mutated,
+                related_to_file,
+                &JestRunner::new(project, timeout),
+            ),
+            RunnerKind::Vitest => run_with_file_swapped(
+                &file_path,
+                &mutated,
+                related_to_file,
+                &VitestRunner::new(project, timeout),
+            ),
         }
         .unwrap_or_else(|e| panic!("failed to run mutant {}: {e}", mutant.id.0));
         results.push(MutantResult { mutant, status });
@@ -114,7 +132,7 @@ fn run(file: &str, project: &str, runner: RunnerKind, timeout_secs: u64) {
     println!("{}", serde_json::to_string_pretty(&results).unwrap());
 }
 
-fn switch(file: &str, project: &str, runner: RunnerKind, timeout_secs: u64) {
+fn switch(file: &str, project: &str, runner: RunnerKind, timeout_secs: u64, related_tests: bool) {
     let file_path = PathBuf::from(file);
     let source_type = SourceType::from_path(&file_path).unwrap_or_default();
     let original = std::fs::read_to_string(&file_path)
@@ -123,18 +141,23 @@ fn switch(file: &str, project: &str, runner: RunnerKind, timeout_secs: u64) {
     let instrumented = switch_instrument(&original, &mutants);
     let ids: Vec<MutantId> = mutants.iter().map(|m| m.id).collect();
     let timeout = Duration::from_secs(timeout_secs);
+    let absolute_file = std::fs::canonicalize(&file_path)
+        .unwrap_or_else(|e| panic!("failed to resolve {file}: {e}"));
+    let related_to_file = related_tests.then_some(absolute_file.as_path());
 
     let statuses: Vec<(MutantId, MutantStatus)> = match runner {
         RunnerKind::Jest => run_with_instrumented_file(
             &file_path,
             &instrumented,
             &ids,
+            related_to_file,
             &JestRunner::new(project, timeout),
         ),
         RunnerKind::Vitest => run_with_instrumented_file(
             &file_path,
             &instrumented,
             &ids,
+            related_to_file,
             &VitestRunner::new(project, timeout),
         ),
     }
