@@ -12,8 +12,10 @@ mtr-test-runner-api.workspace = true
 mtr-runner-jest.workspace = true
 mtr-runner-vitest.workspace = true
 mtr-cache.workspace = true
+mtr-config.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+schemars = "1.2.2"
 oxc_span = "0.144.0"
 glob = "0.3"
 clap = { version = "4", features = ["derive"] }

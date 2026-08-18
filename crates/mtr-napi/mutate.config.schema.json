@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config",
+  "type": "object",
+  "properties": {
+    "cache": {
+      "description": "Path to a content-hash cache file; omit to disable caching.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "changedSince": {
+      "description": "Only test mutants touching lines changed since this git ref.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "ignorePatterns": {
+      "description": "Glob patterns to exclude from `mutate`.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "mutate": {
+      "description": "Glob patterns for files to mutate.",
+      "type": "array",
+      "default": [
+        "src/**/*.js"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "project": {
+      "description": "Directory the test runner is invoked from.",
+      "type": "string",
+      "default": "."
+    },
+    "relatedTests": {
+      "description": "Only run each mutant's related tests (the runner's own dependency\nresolver) instead of the whole suite.",
+      "type": "boolean",
+      "default": false
+    },
+    "testRunner": {
+      "$ref": "#/$defs/TestRunner",
+      "default": "jest"
+    },
+    "thresholds": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Thresholds"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "timeoutSecs": {
+      "type": "integer",
+      "format": "uint64",
+      "default": 30,
+      "minimum": 0
+    }
+  },
+  "$defs": {
+    "TestRunner": {
+      "type": "string",
+      "enum": [
+        "jest",
+        "vitest"
+      ]
+    },
+    "Thresholds": {
+      "type": "object",
+      "properties": {
+        "break": {
+          "description": "Exit non-zero if the mutation score falls below this. `null` (the\ndefault) means never fail the build on score alone.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "default": null
+        },
+        "high": {
+          "type": "number",
+          "format": "double"
+        },
+        "low": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "high",
+        "low"
+      ]
+    }
+  }
+}

@@ -16,6 +16,7 @@ mtr-runner-jest = { path = "crates/mtr-runner-jest" }
 mtr-runner-vitest = { path = "crates/mtr-runner-vitest" }
 mtr-test-runner-api = { path = "crates/mtr-test-runner-api" }
 mtr-cache = { path = "crates/mtr-cache" }
+mtr-config = { path = "crates/mtr-config" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

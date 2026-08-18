@@ -1,0 +1,15 @@
+{
+  "$schema": "../../crates/mtr-napi/mutate.config.schema.json",
+
+  "mutate": ["src/*.js"],
+  "ignorePatterns": ["src/*.test.js"],
+
+  "testRunner": "jest",
+  "relatedTests": true,
+
+  "thresholds": {
+    "high": 80,
+    "low": 60,
+    "break": 50,
+  },
+}
