@@ -12,11 +12,14 @@ mtr-core = { path = "crates/mtr-core" }
 mtr-instrument = { path = "crates/mtr-instrument" }
 mtr-types = { path = "crates/mtr-types" }
 mtr-mutators = { path = "crates/mtr-mutators" }
+mtr-mutators-react = { path = "crates/mtr-mutators-react" }
 mtr-runner-jest = { path = "crates/mtr-runner-jest" }
 mtr-runner-vitest = { path = "crates/mtr-runner-vitest" }
 mtr-test-runner-api = { path = "crates/mtr-test-runner-api" }
 mtr-cache = { path = "crates/mtr-cache" }
 mtr-config = { path = "crates/mtr-config" }
+mtr-reporter-api = { path = "crates/mtr-reporter-api" }
+mtr-reporters = { path = "crates/mtr-reporters" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

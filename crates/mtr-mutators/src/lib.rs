@@ -1,6 +1,6 @@
 use mtr_types::{Mutant, MutantId, Span};
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{BinaryExpression, BooleanLiteral};
+use oxc_ast::ast::{BinaryExpression, BooleanLiteral, JSXAttribute};
 use oxc_ast_visit::{walk, Visit};
 use oxc_parser::Parser;
 use oxc_span::{GetSpan, SourceType};
@@ -20,6 +20,9 @@ pub trait Mutator {
         Vec::new()
     }
     fn discover_boolean_literal(&self, _lit: &BooleanLiteral, _source: &str) -> Vec<MutantCandidate> {
+        Vec::new()
+    }
+    fn discover_jsx_attribute(&self, _attr: &JSXAttribute, _source: &str) -> Vec<MutantCandidate> {
         Vec::new()
     }
 }
@@ -104,7 +107,8 @@ impl Mutator for BooleanLiteralMutator {
     }
 }
 
-fn default_mutators() -> Vec<Box<dyn Mutator>> {
+/// The core, framework-agnostic operator catalog.
+pub fn default_mutators() -> Vec<Box<dyn Mutator>> {
     vec![
         Box::new(ArithmeticOperatorMutator),
         Box::new(EqualityOperatorMutator),
@@ -126,6 +130,17 @@ impl<'m, 's> MutantScanner<'m, 's> {
 
     fn push(&mut self, candidates: Vec<MutantCandidate>) {
         for c in candidates {
+            // Different mutators (e.g. a core operator and a framework-pack
+            // one) can independently match the same site and produce an
+            // identical edit — dedupe here rather than coupling the core
+            // catalog to framework-specific AST shapes to avoid it upstream.
+            let is_duplicate = self
+                .mutants
+                .iter()
+                .any(|m| m.span == c.span && m.replacement == c.replacement);
+            if is_duplicate {
+                continue;
+            }
             self.mutants.push(Mutant {
                 id: MutantId(self.next_id),
                 operator: c.operator.to_string(),
@@ -156,15 +171,34 @@ impl<'ast, 'm, 's> Visit<'ast> for MutantScanner<'m, 's> {
             self.push(candidates);
         }
     }
+
+    fn visit_jsx_attribute(&mut self, it: &JSXAttribute<'ast>) {
+        let mutators = self.mutators;
+        for m in mutators {
+            let candidates = m.discover_jsx_attribute(it, self.source);
+            self.push(candidates);
+        }
+        walk::walk_jsx_attribute(self, it);
+    }
 }
 
 /// Parse `source` and return every mutant the built-in operator catalog
 /// finds, in source order.
 pub fn scan_source(source: &str, source_type: SourceType) -> Vec<Mutant> {
+    scan_source_with_mutators(source, source_type, &default_mutators())
+}
+
+/// Like [`scan_source`], but with an explicit mutator list — lets a
+/// framework-extension crate (e.g. a JSX mutator pack) supply an extended
+/// set instead of only ever getting the built-in catalog.
+pub fn scan_source_with_mutators(
+    source: &str,
+    source_type: SourceType,
+    mutators: &[Box<dyn Mutator>],
+) -> Vec<Mutant> {
     let allocator = Allocator::default();
     let ret = Parser::new(&allocator, source, source_type).parse();
-    let mutators = default_mutators();
-    let mut scanner = MutantScanner::new(&mutators, source);
+    let mut scanner = MutantScanner::new(mutators, source);
     scanner.visit_program(&ret.program);
     scanner.mutants
 }

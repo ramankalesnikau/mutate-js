@@ -7,12 +7,15 @@ license.workspace = true
 [dependencies]
 mtr-types.workspace = true
 mtr-mutators.workspace = true
+mtr-mutators-react.workspace = true
 mtr-instrument.workspace = true
 mtr-test-runner-api.workspace = true
 mtr-runner-jest.workspace = true
 mtr-runner-vitest.workspace = true
 mtr-cache.workspace = true
 mtr-config.workspace = true
+mtr-reporter-api.workspace = true
+mtr-reporters.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars = "1.2.2"

@@ -6,6 +6,8 @@ use clap::{Parser as ClapParser, Subcommand, ValueEnum};
 use mtr_cache::{changed_line_ranges, mutant_signature, mutant_touches_changed_lines, MutantCache};
 use mtr_instrument::switch_instrument;
 use mtr_mutators::apply_mutant;
+use mtr_reporter_api::{FileMutantResults, Reporter};
+use mtr_reporters::{JsonReporter, TextReporter};
 use mtr_runner_jest::JestRunner;
 use mtr_runner_vitest::VitestRunner;
 use mtr_test_runner_api::{run_with_file_swapped, run_with_instrumented_file};
@@ -24,7 +26,13 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Discover mutants in files matching a glob, without running any tests.
-    Scan { glob: String },
+    Scan {
+        glob: String,
+        /// Include the `mtr-mutators-react` operator pack (JSX-specific
+        /// mutators) alongside the core catalog.
+        #[arg(long)]
+        react: bool,
+    },
     /// Mutate one file, running the whole suite once per mutant (naive: no
     /// coverage-based test filtering yet).
     Run {
@@ -95,7 +103,7 @@ struct FileMutants {
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Command::Scan { glob } => scan(&glob),
+        Command::Scan { glob, react } => scan(&glob, react),
         Command::Run { file, project, runner, timeout_secs, related_tests, cache, changed_since } => {
             run(&file, &project, runner, timeout_secs, related_tests, cache, changed_since)
         }
@@ -110,7 +118,22 @@ fn main() {
     }
 }
 
-fn scan(pattern: &str) {
+/// Combines the core catalog with any requested framework-extension packs.
+/// The single place a new pack (beyond `react`) would get registered.
+fn build_mutators(packs: &[String]) -> Vec<Box<dyn mtr_mutators::Mutator>> {
+    let mut mutators = mtr_mutators::default_mutators();
+    for pack in packs {
+        match pack.as_str() {
+            "react" => mutators.extend(mtr_mutators_react::mutators()),
+            other => panic!("unknown mutator pack `{other}` (expected `react`)"),
+        }
+    }
+    mutators
+}
+
+fn scan(pattern: &str, react: bool) {
+    let packs = if react { vec!["react".to_string()] } else { Vec::new() };
+    let mutators = build_mutators(&packs);
     let paths = glob::glob(pattern).unwrap_or_else(|e| panic!("invalid glob `{pattern}`: {e}"));
 
     let mut results = Vec::new();
@@ -119,7 +142,7 @@ fn scan(pattern: &str) {
         let source_type = SourceType::from_path(&path).unwrap_or_default();
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-        let mutants = mtr_mutators::scan_source(&source, source_type);
+        let mutants = mtr_mutators::scan_source_with_mutators(&source, source_type, &mutators);
         results.push(FileMutants { file: path.display().to_string(), mutants });
     }
 
@@ -215,6 +238,7 @@ fn switch(
     changed_since: Option<String>,
 ) {
     let mut cache = cache_path.as_deref().map(|p| MutantCache::load(Path::new(p)));
+    let mutators = mtr_mutators::default_mutators();
     let (results, cache_hits) = switch_one_file(
         Path::new(file),
         project,
@@ -223,6 +247,7 @@ fn switch(
         related_tests,
         &mut cache,
         changed_since.as_deref(),
+        &mutators,
     );
 
     save_cache_and_report(cache.as_ref(), cache_path.as_deref(), cache_hits, results.len());
@@ -243,6 +268,7 @@ fn switch_one_file(
     related_tests: bool,
     cache: &mut Option<MutantCache>,
     changed_since: Option<&str>,
+    mutators: &[Box<dyn mtr_mutators::Mutator>],
 ) -> (Vec<MutantResult>, usize) {
     let file_key = file.to_string_lossy().into_owned();
     let source_type = SourceType::from_path(file).unwrap_or_default();
@@ -252,7 +278,7 @@ fn switch_one_file(
         .unwrap_or_else(|e| panic!("failed to resolve {}: {e}", file.display()));
     let related_to_file = related_tests.then_some(absolute_file.as_path());
 
-    let mutants = mtr_mutators::scan_source(&original, source_type);
+    let mutants = mtr_mutators::scan_source_with_mutators(&original, source_type, mutators);
     let mutants = scope_to_diff(mutants, project, &absolute_file, &original, changed_since);
 
     // Prune before instrumentation: cached mutants never get embedded in the
@@ -340,6 +366,8 @@ fn mutate(config_path: Option<String>) {
     let mut cache = config.cache.as_deref().map(|p| MutantCache::load(Path::new(p)));
     let mut cache_hits_total = 0;
     let mut per_file: Vec<FileMutantResults> = Vec::new();
+    let mut reporters = build_reporters(&config.reporters);
+    let mutators = build_mutators(&config.mutator_packs);
 
     for file in &files {
         let (results, hits) = switch_one_file(
@@ -350,12 +378,20 @@ fn mutate(config_path: Option<String>) {
             config.related_tests,
             &mut cache,
             config.changed_since.as_deref(),
+            &mutators,
         );
         if results.is_empty() {
             continue;
         }
         cache_hits_total += hits;
-        per_file.push(FileMutantResults { file: file.display().to_string(), mutants: results });
+        let file_key = file.display().to_string();
+        for reporter in &mut reporters {
+            for result in &results {
+                reporter.on_mutant_tested(&file_key, result);
+            }
+            reporter.on_file_complete(&file_key, &results);
+        }
+        per_file.push(FileMutantResults { file: file_key, mutants: results });
     }
 
     let (killed, survived, other) = per_file.iter().flat_map(|f| &f.mutants).fold(
@@ -370,12 +406,16 @@ fn mutate(config_path: Option<String>) {
     let score = if tested > 0 { f64::from(killed) / f64::from(tested) * 100.0 } else { 100.0 };
     let total_mutants: usize = per_file.iter().map(|f| f.mutants.len()).sum();
 
+    for reporter in &mut reporters {
+        reporter.on_run_complete(&per_file, score);
+        reporter.wrap_up();
+    }
+
     eprintln!(
         "Mutation score: {score:.1}% ({killed} killed, {survived} survived, {other} other) across {} file(s)",
         per_file.len()
     );
     save_cache_and_report(cache.as_ref(), config.cache.as_deref(), cache_hits_total, total_mutants);
-    println!("{}", serde_json::to_string_pretty(&per_file).unwrap());
 
     if let Some(break_score) = config.thresholds.as_ref().and_then(|t| t.break_score) {
         if score < break_score {
@@ -385,10 +425,17 @@ fn mutate(config_path: Option<String>) {
     }
 }
 
-#[derive(Serialize)]
-struct FileMutantResults {
-    file: String,
-    mutants: Vec<MutantResult>,
+fn build_reporters(names: &[String]) -> Vec<Box<dyn Reporter>> {
+    names
+        .iter()
+        .map(|name| -> Box<dyn Reporter> {
+            match name.as_str() {
+                "json" => Box::new(JsonReporter::default()),
+                "text" => Box::new(TextReporter),
+                other => panic!("unknown reporter `{other}` (expected `json` or `text`)"),
+            }
+        })
+        .collect()
 }
 
 fn save_cache_and_report(

@@ -1,0 +1,10 @@
+[package]
+name = "mtr-reporters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mtr-types.workspace = true
+mtr-reporter-api.workspace = true
+serde_json.workspace = true

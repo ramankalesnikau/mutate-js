@@ -49,6 +49,12 @@ pub struct Config {
     pub changed_since: Option<String>,
     #[serde(default)]
     pub thresholds: Option<Thresholds>,
+    /// Which reporters to activate, e.g. `["json"]` or `["text"]`.
+    #[serde(default = "default_reporters")]
+    pub reporters: Vec<String>,
+    /// Extra mutator packs to include alongside the core catalog, e.g. `["react"]`.
+    #[serde(default)]
+    pub mutator_packs: Vec<String>,
 }
 
 fn default_mutate() -> Vec<String> {
@@ -63,6 +69,10 @@ fn default_timeout_secs() -> u64 {
     30
 }
 
+fn default_reporters() -> Vec<String> {
+    vec!["json".to_string()]
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -75,6 +85,8 @@ impl Default for Config {
             cache: None,
             changed_since: None,
             thresholds: None,
+            reporters: default_reporters(),
+            mutator_packs: Vec::new(),
         }
     }
 }
@@ -100,6 +112,8 @@ mod tests {
         assert!(!config.related_tests);
         assert_eq!(config.test_runner, TestRunner::Jest);
         assert!(config.thresholds.is_none());
+        assert_eq!(config.reporters, vec!["json".to_string()]);
+        assert!(config.mutator_packs.is_empty());
     }
 
     #[test]

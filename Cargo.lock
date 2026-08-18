@@ -371,6 +371,9 @@ dependencies = [
  "mtr-config",
  "mtr-instrument",
  "mtr-mutators",
+ "mtr-mutators-react",
+ "mtr-reporter-api",
+ "mtr-reporters",
  "mtr-runner-jest",
  "mtr-runner-vitest",
  "mtr-test-runner-api",
@@ -421,12 +424,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "mtr-mutators-react"
+version = "0.0.1"
+dependencies = [
+ "mtr-mutators",
+ "mtr-types",
+ "oxc_ast",
+ "oxc_span",
+]
+
+[[package]]
 name = "mtr-napi"
 version = "0.0.1"
 dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+]
+
+[[package]]
+name = "mtr-reporter-api"
+version = "0.0.1"
+dependencies = [
+ "mtr-types",
+ "serde",
+]
+
+[[package]]
+name = "mtr-reporters"
+version = "0.0.1"
+dependencies = [
+ "mtr-reporter-api",
+ "mtr-types",
+ "serde_json",
 ]
 
 [[package]]

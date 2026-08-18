@@ -37,6 +37,14 @@
         "type": "string"
       }
     },
+    "mutatorPacks": {
+      "description": "Extra mutator packs to include alongside the core catalog, e.g. `[\"react\"]`.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
     "project": {
       "description": "Directory the test runner is invoked from.",
       "type": "string",
@@ -46,6 +54,16 @@
       "description": "Only run each mutant's related tests (the runner's own dependency\nresolver) instead of the whole suite.",
       "type": "boolean",
       "default": false
+    },
+    "reporters": {
+      "description": "Which reporters to activate, e.g. `[\"json\"]` or `[\"text\"]`.",
+      "type": "array",
+      "default": [
+        "json"
+      ],
+      "items": {
+        "type": "string"
+      }
     },
     "testRunner": {
       "$ref": "#/$defs/TestRunner",

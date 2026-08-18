@@ -1,0 +1,13 @@
+[package]
+name = "mtr-mutators-react"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mtr-types.workspace = true
+mtr-mutators.workspace = true
+oxc_ast = "0.144.0"
+
+[dev-dependencies]
+oxc_span = "0.144.0"
