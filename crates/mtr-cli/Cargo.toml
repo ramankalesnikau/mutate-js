@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+mtr-core.workspace = true
 mtr-types.workspace = true
 mtr-mutators.workspace = true
 mtr-mutators-react.workspace = true

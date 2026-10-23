@@ -369,6 +369,7 @@ dependencies = [
  "glob",
  "mtr-cache",
  "mtr-config",
+ "mtr-core",
  "mtr-instrument",
  "mtr-mutators",
  "mtr-mutators-react",
@@ -396,6 +397,23 @@ dependencies = [
 [[package]]
 name = "mtr-core"
 version = "0.0.1"
+dependencies = [
+ "glob",
+ "mtr-cache",
+ "mtr-config",
+ "mtr-instrument",
+ "mtr-mutators",
+ "mtr-mutators-react",
+ "mtr-reporter-api",
+ "mtr-reporters",
+ "mtr-runner-jest",
+ "mtr-runner-vitest",
+ "mtr-test-runner-api",
+ "mtr-types",
+ "oxc_span",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "mtr-instrument"
@@ -437,9 +455,12 @@ dependencies = [
 name = "mtr-napi"
 version = "0.0.1"
 dependencies = [
+ "mtr-config",
+ "mtr-core",
  "napi",
  "napi-build",
  "napi-derive",
+ "serde_json",
 ]
 
 [[package]]

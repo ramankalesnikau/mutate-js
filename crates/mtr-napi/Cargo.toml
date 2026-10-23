@@ -8,8 +8,11 @@ license.workspace = true
 crate-type = ["cdylib"]
 
 [dependencies]
+mtr-config.workspace = true
+mtr-core.workspace = true
 napi = { version = "2", default-features = false, features = ["napi4"] }
 napi-derive = "2"
+serde_json.workspace = true
 
 [build-dependencies]
 napi-build = "2"

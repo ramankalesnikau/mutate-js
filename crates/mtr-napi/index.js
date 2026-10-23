@@ -310,6 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { hello } = nativeBinding
+const { scan, mutate } = nativeBinding
 
-module.exports.hello = hello
+module.exports.scan = scan
+module.exports.mutate = mutate

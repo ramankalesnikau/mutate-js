@@ -22,11 +22,12 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-The native Node binding lives in `crates/mtr-napi`:
+The native Node binding lives in `crates/mtr-napi`, a thin wrapper over the
+`mtr-core` engine. Results cross the FFI boundary as JSON strings:
 
 ```bash
 cd crates/mtr-napi
 npm install
 npm run build:debug
-node -e "console.log(require('./index.js').hello())"
+node -e "console.log(require('./index.js').scan('src/**/*.js', false))"
 ```
