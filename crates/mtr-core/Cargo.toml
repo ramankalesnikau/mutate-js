@@ -10,6 +10,7 @@ mtr-mutators.workspace = true
 mtr-mutators-react.workspace = true
 mtr-instrument.workspace = true
 mtr-test-runner-api.workspace = true
+mtr-coverage.workspace = true
 mtr-runner-jest.workspace = true
 mtr-runner-vitest.workspace = true
 mtr-cache.workspace = true

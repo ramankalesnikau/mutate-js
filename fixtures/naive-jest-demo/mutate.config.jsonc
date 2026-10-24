@@ -5,7 +5,7 @@
   "ignorePatterns": ["src/*.test.js"],
 
   "testRunner": "jest",
-  "relatedTests": true,
+  "testFilter": "related",
 
   "thresholds": {
     "high": 80,

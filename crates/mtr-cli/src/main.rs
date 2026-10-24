@@ -4,8 +4,8 @@ use std::time::Duration;
 use clap::{Parser as ClapParser, Subcommand};
 use mtr_cache::{mutant_signature, MutantCache};
 use mtr_core::{
-    scan_files, scope_to_diff, switch_one_file, MutatorRegistry, ReporterRegistry,
-    TestRunnerRegistry,
+    scan_files, scope_to_diff, switch_one_file, switch_one_file_with_coverage, MutatorRegistry,
+    ReporterRegistry, TestRunnerRegistry,
 };
 use mtr_mutators::apply_mutant;
 use mtr_reporter_api::FileMutantResults;
@@ -249,15 +249,36 @@ fn mutate(config_path: Option<String>) {
         .unwrap_or_else(|e| panic!("{e}"));
 
     for file in &files {
-        let (results, hits, source) = switch_one_file(
-            file,
-            &config.project,
-            test_runner.as_ref(),
-            config.related_tests,
-            &mut cache,
-            config.changed_since.as_deref(),
-            &mutators,
-        );
+        let (results, hits, source) = match config.test_filter.as_str() {
+            "all" => switch_one_file(
+                file,
+                &config.project,
+                test_runner.as_ref(),
+                false,
+                &mut cache,
+                config.changed_since.as_deref(),
+                &mutators,
+            ),
+            "related" => switch_one_file(
+                file,
+                &config.project,
+                test_runner.as_ref(),
+                true,
+                &mut cache,
+                config.changed_since.as_deref(),
+                &mutators,
+            ),
+            "coverage" => switch_one_file_with_coverage(
+                file,
+                &config.project,
+                test_runner.as_ref(),
+                &mut cache,
+                config.changed_since.as_deref(),
+                &mutators,
+            )
+            .unwrap_or_else(|e| panic!("{e}")),
+            other => panic!("unknown test filter `{other}` (available: all, related, coverage)"),
+        };
         if results.is_empty() {
             continue;
         }
@@ -276,7 +297,7 @@ fn mutate(config_path: Option<String>) {
         (0u32, 0u32, 0u32),
         |(k, s, o), r| match r.status {
             MutantStatus::Killed => (k + 1, s, o),
-            MutantStatus::Survived => (k, s + 1, o),
+            MutantStatus::Survived | MutantStatus::NoCoverage => (k, s + 1, o),
             _ => (k, s, o + 1),
         },
     );

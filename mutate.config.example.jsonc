@@ -7,7 +7,7 @@
   "ignorePatterns": ["src/**/*.test.js"],
 
   "testRunner": "jest",
-  "relatedTests": true,
+  "testFilter": "related",
   "cache": ".mutate-cache.json",
 
   "thresholds": {

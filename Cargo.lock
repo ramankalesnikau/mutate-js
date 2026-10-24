@@ -401,6 +401,7 @@ dependencies = [
  "glob",
  "mtr-cache",
  "mtr-config",
+ "mtr-coverage",
  "mtr-instrument",
  "mtr-mutators",
  "mtr-mutators-react",

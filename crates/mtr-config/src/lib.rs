@@ -32,10 +32,12 @@ pub struct Config {
     pub test_runner: String,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
-    /// Only run each mutant's related tests (the runner's own dependency
-    /// resolver) instead of the whole suite.
-    #[serde(default)]
-    pub related_tests: bool,
+    /// Test-selection strategy per mutant: `"all"` (whole suite), `"related"`
+    /// (the runner's own import-graph resolver), or `"coverage"` (per-test
+    /// statement coverage — most precise, requires runner support; see
+    /// `mtr-core`'s `TestRunner::collect_coverage`).
+    #[serde(default = "default_test_filter")]
+    pub test_filter: String,
     /// Path to a content-hash cache file; omit to disable caching.
     #[serde(default)]
     pub cache: Option<String>,
@@ -70,6 +72,10 @@ fn default_test_runner() -> String {
     "jest".to_string()
 }
 
+fn default_test_filter() -> String {
+    "all".to_string()
+}
+
 fn default_timeout_secs() -> u64 {
     30
 }
@@ -86,7 +92,7 @@ impl Default for Config {
             project: default_project(),
             test_runner: default_test_runner(),
             timeout_secs: default_timeout_secs(),
-            related_tests: false,
+            test_filter: default_test_filter(),
             cache: None,
             changed_since: None,
             thresholds: None,
@@ -115,11 +121,17 @@ mod tests {
         assert_eq!(config.mutate, vec!["src/**/*.js".to_string()]);
         assert_eq!(config.project, ".");
         assert_eq!(config.timeout_secs, 30);
-        assert!(!config.related_tests);
+        assert_eq!(config.test_filter, "all");
         assert_eq!(config.test_runner, "jest");
         assert!(config.thresholds.is_none());
         assert_eq!(config.reporters, vec!["json".to_string()]);
         assert!(config.mutator_packs.is_empty());
+    }
+
+    #[test]
+    fn test_filter_round_trips_a_coverage_value() {
+        let config: Config = json5::from_str(r#"{ testFilter: "coverage" }"#).unwrap();
+        assert_eq!(config.test_filter, "coverage");
     }
 
     #[test]

@@ -58,11 +58,6 @@
       "type": "string",
       "default": "."
     },
-    "relatedTests": {
-      "description": "Only run each mutant's related tests (the runner's own dependency\nresolver) instead of the whole suite.",
-      "type": "boolean",
-      "default": false
-    },
     "reporters": {
       "description": "Which reporters to activate, e.g. `[\"json\"]` or `[\"text\"]`.",
       "type": "array",
@@ -72,6 +67,11 @@
       "items": {
         "type": "string"
       }
+    },
+    "testFilter": {
+      "description": "Test-selection strategy per mutant: `\"all\"` (whole suite), `\"related\"`\n(the runner's own import-graph resolver), or `\"coverage\"` (per-test\nstatement coverage — most precise, requires runner support; see\n`mtr-core`'s `TestRunner::collect_coverage`).",
+      "type": "string",
+      "default": "all"
     },
     "testRunner": {
       "description": "Which test runner to use, e.g. `\"jest\"` or `\"vitest\"`. Validated\nagainst `mtr-core`'s `TestRunnerRegistry` at use, not here — this\ncrate has no opinion on which runners exist.",
