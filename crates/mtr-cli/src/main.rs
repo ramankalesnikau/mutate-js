@@ -1,13 +1,14 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use clap::{Parser as ClapParser, Subcommand, ValueEnum};
+use clap::{Parser as ClapParser, Subcommand};
 use mtr_cache::{mutant_signature, MutantCache};
-use mtr_core::{scan_files, scope_to_diff, switch_one_file, MutatorRegistry, ReporterRegistry};
+use mtr_core::{
+    scan_files, scope_to_diff, switch_one_file, MutatorRegistry, ReporterRegistry,
+    TestRunnerRegistry,
+};
 use mtr_mutators::apply_mutant;
 use mtr_reporter_api::FileMutantResults;
-use mtr_runner_jest::JestRunner;
-use mtr_runner_vitest::VitestRunner;
 use mtr_test_runner_api::run_with_file_swapped;
 use mtr_types::{MutantResult, MutantStatus};
 use oxc_span::SourceType;
@@ -36,7 +37,7 @@ enum Command {
         file: String,
         #[arg(long, default_value = ".")]
         project: String,
-        #[arg(long, value_enum, default_value = "jest")]
+        #[arg(long, default_value = "jest")]
         runner: RunnerKind,
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
@@ -61,7 +62,7 @@ enum Command {
         file: String,
         #[arg(long, default_value = ".")]
         project: String,
-        #[arg(long, value_enum, default_value = "jest")]
+        #[arg(long, default_value = "jest")]
         runner: RunnerKind,
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
@@ -85,18 +86,17 @@ enum Command {
     ConfigSchema,
 }
 
-#[derive(Clone, ValueEnum)]
-enum RunnerKind {
-    Jest,
-    Vitest,
-}
+// Not a closed `ValueEnum` — `TestRunnerRegistry` (in `mtr-core`) is the
+// actual source of truth for which runner names exist, so a plugin
+// registering a new one shows up here as a valid `--runner` value too,
+// without this CLI needing a matching new enum variant.
+#[derive(Clone)]
+struct RunnerKind(String);
 
-impl From<RunnerKind> for mtr_config::TestRunner {
-    fn from(kind: RunnerKind) -> Self {
-        match kind {
-            RunnerKind::Jest => mtr_config::TestRunner::Jest,
-            RunnerKind::Vitest => mtr_config::TestRunner::Vitest,
-        }
+impl std::str::FromStr for RunnerKind {
+    type Err = std::convert::Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(RunnerKind(s.to_string()))
     }
 }
 
@@ -150,6 +150,9 @@ fn run(
     let mutants =
         scope_to_diff(mutants, project, &absolute_file, &original, changed_since.as_deref());
     let timeout = Duration::from_secs(timeout_secs);
+    let test_runner = TestRunnerRegistry::default()
+        .build(&runner.0, project, timeout)
+        .unwrap_or_else(|e| panic!("{e}"));
 
     let mut cache = cache_path.as_deref().map(|p| MutantCache::load(Path::new(p)));
     let mut cache_hits = 0;
@@ -164,21 +167,8 @@ fn run(
         }
 
         let mutated = apply_mutant(&original, &mutant);
-        let status = match runner {
-            RunnerKind::Jest => run_with_file_swapped(
-                &file_path,
-                &mutated,
-                related_to_file,
-                &JestRunner::new(project, timeout),
-            ),
-            RunnerKind::Vitest => run_with_file_swapped(
-                &file_path,
-                &mutated,
-                related_to_file,
-                &VitestRunner::new(project, timeout),
-            ),
-        }
-        .unwrap_or_else(|e| panic!("failed to run mutant {}: {e}", mutant.id.0));
+        let status = run_with_file_swapped(&file_path, &mutated, related_to_file, test_runner.as_ref())
+            .unwrap_or_else(|e| panic!("failed to run mutant {}: {e}", mutant.id.0));
         if let Some(c) = cache.as_mut() {
             c.set(signature, status);
         }
@@ -200,11 +190,13 @@ fn switch(
 ) {
     let mut cache = cache_path.as_deref().map(|p| MutantCache::load(Path::new(p)));
     let mutators = mtr_mutators::default_mutators();
+    let test_runner = TestRunnerRegistry::default()
+        .build(&runner.0, project, Duration::from_secs(timeout_secs))
+        .unwrap_or_else(|e| panic!("{e}"));
     let (results, cache_hits, _source) = switch_one_file(
         Path::new(file),
         project,
-        runner.into(),
-        Duration::from_secs(timeout_secs),
+        test_runner.as_ref(),
         related_tests,
         &mut cache,
         changed_since.as_deref(),
@@ -252,13 +244,15 @@ fn mutate(config_path: Option<String>) {
     let mutators = MutatorRegistry::default()
         .build(&config.mutator_packs, &config.excluded_mutators)
         .unwrap_or_else(|e| panic!("{e}"));
+    let test_runner = TestRunnerRegistry::default()
+        .build(&config.test_runner, &config.project, timeout)
+        .unwrap_or_else(|e| panic!("{e}"));
 
     for file in &files {
         let (results, hits, source) = switch_one_file(
             file,
             &config.project,
-            config.test_runner,
-            timeout,
+            test_runner.as_ref(),
             config.related_tests,
             &mut cache,
             config.changed_since.as_deref(),

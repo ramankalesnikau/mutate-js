@@ -8,14 +8,14 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use mtr_cache::{changed_line_ranges, mutant_signature, mutant_touches_changed_lines, MutantCache};
-use mtr_config::{Config, TestRunner};
+use mtr_config::Config;
 use mtr_instrument::switch_instrument;
 use mtr_mutators::Mutator;
 use mtr_reporter_api::{FileMutantResults, Reporter};
 use mtr_reporters::{HtmlReporter, JsonReporter, TextReporter};
 use mtr_runner_jest::JestRunner;
 use mtr_runner_vitest::VitestRunner;
-use mtr_test_runner_api::run_with_instrumented_file;
+use mtr_test_runner_api::{run_with_instrumented_file, DynTestRunner};
 use mtr_types::{Mutant, MutantId, MutantResult, MutantStatus};
 use oxc_span::SourceType;
 use serde::Serialize;
@@ -123,6 +123,47 @@ impl Default for ReporterRegistry {
     }
 }
 
+type TestRunnerFactory = fn(&str, Duration) -> Box<DynTestRunner>;
+
+/// Registers which `testRunner` config names are available, each backed by a
+/// plain factory function taking the project dir and timeout every runner
+/// needs — same boundary shape as `MutatorRegistry`/`ReporterRegistry`, so
+/// adding a runner (e.g. Mocha) is a `register` call, not a new match arm.
+pub struct TestRunnerRegistry {
+    runners: BTreeMap<&'static str, TestRunnerFactory>,
+}
+
+impl TestRunnerRegistry {
+    pub fn new() -> Self {
+        Self { runners: BTreeMap::new() }
+    }
+
+    pub fn register(&mut self, name: &'static str, factory: TestRunnerFactory) -> &mut Self {
+        self.runners.insert(name, factory);
+        self
+    }
+
+    pub fn names(&self) -> Vec<&'static str> {
+        self.runners.keys().copied().collect()
+    }
+
+    pub fn build(&self, name: &str, project: &str, timeout: Duration) -> Result<Box<DynTestRunner>, String> {
+        let factory = self.runners.get(name).ok_or_else(|| {
+            format!("unknown test runner `{name}` (available: {})", self.names().join(", "))
+        })?;
+        Ok(factory(project, timeout))
+    }
+}
+
+impl Default for TestRunnerRegistry {
+    fn default() -> Self {
+        let mut registry = Self::new();
+        registry.register("jest", |project, timeout| Box::new(JestRunner::new(project, timeout)));
+        registry.register("vitest", |project, timeout| Box::new(VitestRunner::new(project, timeout)));
+        registry
+    }
+}
+
 /// Discovers mutants in every file matching `pattern`, without running any
 /// tests.
 pub fn scan_files(pattern: &str, mutators: &[Box<dyn Mutator>]) -> Result<Vec<FileMutants>, String> {
@@ -167,8 +208,7 @@ pub fn scope_to_diff(
 pub fn switch_one_file(
     file: &Path,
     project: &str,
-    runner: TestRunner,
-    timeout: Duration,
+    runner: &DynTestRunner,
     related_tests: bool,
     cache: &mut Option<MutantCache>,
     changed_since: Option<&str>,
@@ -205,23 +245,9 @@ pub fn switch_one_file(
     if !to_test.is_empty() {
         let instrumented = switch_instrument(&original, &to_test);
         let ids: Vec<MutantId> = to_test.iter().map(|m| m.id).collect();
-        let statuses: Vec<(MutantId, MutantStatus)> = match runner {
-            TestRunner::Jest => run_with_instrumented_file(
-                file,
-                &instrumented,
-                &ids,
-                related_to_file,
-                &JestRunner::new(project, timeout),
-            ),
-            TestRunner::Vitest => run_with_instrumented_file(
-                file,
-                &instrumented,
-                &ids,
-                related_to_file,
-                &VitestRunner::new(project, timeout),
-            ),
-        }
-        .unwrap_or_else(|e| panic!("failed to run instrumented file: {e}"));
+        let statuses: Vec<(MutantId, MutantStatus)> =
+            run_with_instrumented_file(file, &instrumented, &ids, related_to_file, runner)
+                .unwrap_or_else(|e| panic!("failed to run instrumented file: {e}"));
         let status_by_id: HashMap<u32, MutantStatus> =
             statuses.into_iter().map(|(id, status)| (id.0, status)).collect();
 
@@ -276,13 +302,13 @@ pub fn run_mutate(config: &Config) -> Result<MutateSummary, String> {
     let mut per_file: Vec<FileMutantResults> = Vec::new();
     let mutators =
         MutatorRegistry::default().build(&config.mutator_packs, &config.excluded_mutators)?;
+    let runner = TestRunnerRegistry::default().build(&config.test_runner, &config.project, timeout)?;
 
     for file in &files {
         let (results, hits, source) = switch_one_file(
             file,
             &config.project,
-            config.test_runner,
-            timeout,
+            runner.as_ref(),
             config.related_tests,
             &mut cache,
             config.changed_since.as_deref(),
@@ -391,5 +417,45 @@ mod tests {
         };
         assert!(err.contains("unknown"), "error should name the bad reporter: {err}");
         assert!(err.contains("json"), "error should list available reporters: {err}");
+    }
+
+    #[test]
+    fn test_runner_registry_includes_jest_and_vitest_by_default() {
+        assert_eq!(TestRunnerRegistry::default().names(), vec!["jest", "vitest"]);
+    }
+
+    #[test]
+    fn test_runner_registry_builds_a_registered_runner() {
+        assert!(TestRunnerRegistry::default()
+            .build("jest", ".", Duration::from_secs(30))
+            .is_ok());
+        assert!(TestRunnerRegistry::default()
+            .build("vitest", ".", Duration::from_secs(30))
+            .is_ok());
+    }
+
+    #[test]
+    fn test_runner_registry_rejects_unknown_runner_without_panicking() {
+        let Err(err) = TestRunnerRegistry::default().build("unknown", ".", Duration::from_secs(30))
+        else {
+            panic!("expected an error for an unregistered test runner");
+        };
+        assert!(err.contains("unknown"), "error should name the bad runner: {err}");
+        assert!(err.contains("jest"), "error should list available runners: {err}");
+    }
+
+    #[test]
+    fn test_runner_registry_accepts_a_custom_registration() {
+        struct NoopRunner;
+        impl mtr_test_runner_api::TestRunner for NoopRunner {
+            fn run(&self, _opts: mtr_test_runner_api::RunOptions) -> MutantStatus {
+                MutantStatus::Killed
+            }
+        }
+        impl std::panic::RefUnwindSafe for NoopRunner {}
+
+        let mut registry = TestRunnerRegistry::new();
+        registry.register("noop", |_project, _timeout| Box::new(NoopRunner));
+        assert!(registry.build("noop", ".", Duration::from_secs(30)).is_ok());
     }
 }

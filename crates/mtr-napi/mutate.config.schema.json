@@ -74,7 +74,8 @@
       }
     },
     "testRunner": {
-      "$ref": "#/$defs/TestRunner",
+      "description": "Which test runner to use, e.g. `\"jest\"` or `\"vitest\"`. Validated\nagainst `mtr-core`'s `TestRunnerRegistry` at use, not here — this\ncrate has no opinion on which runners exist.",
+      "type": "string",
       "default": "jest"
     },
     "thresholds": {
@@ -96,13 +97,6 @@
     }
   },
   "$defs": {
-    "TestRunner": {
-      "type": "string",
-      "enum": [
-        "jest",
-        "vitest"
-      ]
-    },
     "Thresholds": {
       "type": "object",
       "properties": {

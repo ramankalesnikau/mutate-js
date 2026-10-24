@@ -3,14 +3,6 @@ use std::path::Path;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum TestRunner {
-    #[default]
-    Jest,
-    Vitest,
-}
-
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct Thresholds {
     pub high: f64,
@@ -33,8 +25,11 @@ pub struct Config {
     /// Directory the test runner is invoked from.
     #[serde(default = "default_project")]
     pub project: String,
-    #[serde(default)]
-    pub test_runner: TestRunner,
+    /// Which test runner to use, e.g. `"jest"` or `"vitest"`. Validated
+    /// against `mtr-core`'s `TestRunnerRegistry` at use, not here — this
+    /// crate has no opinion on which runners exist.
+    #[serde(default = "default_test_runner")]
+    pub test_runner: String,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
     /// Only run each mutant's related tests (the runner's own dependency
@@ -71,6 +66,10 @@ fn default_project() -> String {
     ".".to_string()
 }
 
+fn default_test_runner() -> String {
+    "jest".to_string()
+}
+
 fn default_timeout_secs() -> u64 {
     30
 }
@@ -85,7 +84,7 @@ impl Default for Config {
             mutate: default_mutate(),
             ignore_patterns: Vec::new(),
             project: default_project(),
-            test_runner: TestRunner::default(),
+            test_runner: default_test_runner(),
             timeout_secs: default_timeout_secs(),
             related_tests: false,
             cache: None,
@@ -117,7 +116,7 @@ mod tests {
         assert_eq!(config.project, ".");
         assert_eq!(config.timeout_secs, 30);
         assert!(!config.related_tests);
-        assert_eq!(config.test_runner, TestRunner::Jest);
+        assert_eq!(config.test_runner, "jest");
         assert!(config.thresholds.is_none());
         assert_eq!(config.reporters, vec!["json".to_string()]);
         assert!(config.mutator_packs.is_empty());
@@ -132,7 +131,7 @@ mod tests {
             thresholds: { high: 80, low: 60, break: 50 },
         }"#;
         let config: Config = json5::from_str(source).unwrap();
-        assert_eq!(config.test_runner, TestRunner::Vitest);
+        assert_eq!(config.test_runner, "vitest");
         let thresholds = config.thresholds.unwrap();
         assert_eq!(thresholds.break_score, Some(50.0));
     }
