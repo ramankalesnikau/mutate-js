@@ -3,7 +3,7 @@
 //! invoking the configured test runner. Presentation (stdout, reporters,
 //! `std::process::exit`) stays with the caller.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -11,7 +11,8 @@ use mtr_cache::{changed_line_ranges, mutant_signature, mutant_touches_changed_li
 use mtr_config::{Config, TestRunner};
 use mtr_instrument::switch_instrument;
 use mtr_mutators::Mutator;
-use mtr_reporter_api::FileMutantResults;
+use mtr_reporter_api::{FileMutantResults, Reporter};
+use mtr_reporters::{JsonReporter, TextReporter};
 use mtr_runner_jest::JestRunner;
 use mtr_runner_vitest::VitestRunner;
 use mtr_test_runner_api::run_with_instrumented_file;
@@ -25,17 +26,93 @@ pub struct FileMutants {
     pub mutants: Vec<Mutant>,
 }
 
-/// Combines the core mutator catalog with any requested framework-extension
-/// packs. The single place a new pack (beyond `react`) gets registered.
-pub fn build_mutators(packs: &[String]) -> Vec<Box<dyn Mutator>> {
-    let mut mutators = mtr_mutators::default_mutators();
-    for pack in packs {
-        match pack.as_str() {
-            "react" => mutators.extend(mtr_mutators_react::mutators()),
-            other => panic!("unknown mutator pack `{other}` (expected `react`)"),
-        }
+type MutatorFactory = fn() -> Vec<Box<dyn Mutator>>;
+
+/// Registers which `mutator_packs` config names are available, each backed
+/// by a plain factory function — the boundary a plugin crate extends by
+/// calling `register` instead of adding a match arm in `mtr-cli`.
+/// `BTreeMap` keeps `names()` (used in error messages) in a stable order.
+pub struct MutatorRegistry {
+    packs: BTreeMap<&'static str, MutatorFactory>,
+}
+
+impl MutatorRegistry {
+    pub fn new() -> Self {
+        Self { packs: BTreeMap::new() }
     }
-    mutators
+
+    pub fn register(&mut self, name: &'static str, factory: MutatorFactory) -> &mut Self {
+        self.packs.insert(name, factory);
+        self
+    }
+
+    pub fn names(&self) -> Vec<&'static str> {
+        self.packs.keys().copied().collect()
+    }
+
+    /// Combines the core mutator catalog (always included) with every named
+    /// pack, in the order requested.
+    pub fn build(&self, requested: &[String]) -> Result<Vec<Box<dyn Mutator>>, String> {
+        let mut mutators = mtr_mutators::default_mutators();
+        for name in requested {
+            let factory = self.packs.get(name.as_str()).ok_or_else(|| {
+                format!("unknown mutator pack `{name}` (available: {})", self.names().join(", "))
+            })?;
+            mutators.extend(factory());
+        }
+        Ok(mutators)
+    }
+}
+
+impl Default for MutatorRegistry {
+    fn default() -> Self {
+        let mut registry = Self::new();
+        registry.register("react", mtr_mutators_react::mutators);
+        registry
+    }
+}
+
+type ReporterFactory = fn() -> Box<dyn Reporter>;
+
+/// Registers which `reporters` config names are available, each backed by a
+/// plain factory function — same boundary shape as `MutatorRegistry`.
+pub struct ReporterRegistry {
+    reporters: BTreeMap<&'static str, ReporterFactory>,
+}
+
+impl ReporterRegistry {
+    pub fn new() -> Self {
+        Self { reporters: BTreeMap::new() }
+    }
+
+    pub fn register(&mut self, name: &'static str, factory: ReporterFactory) -> &mut Self {
+        self.reporters.insert(name, factory);
+        self
+    }
+
+    pub fn names(&self) -> Vec<&'static str> {
+        self.reporters.keys().copied().collect()
+    }
+
+    pub fn build(&self, requested: &[String]) -> Result<Vec<Box<dyn Reporter>>, String> {
+        requested
+            .iter()
+            .map(|name| {
+                self.reporters.get(name.as_str()).map(|factory| factory()).ok_or_else(|| {
+                    format!("unknown reporter `{name}` (available: {})", self.names().join(", "))
+                })
+            })
+            .collect()
+    }
+}
+
+impl Default for ReporterRegistry {
+    fn default() -> Self {
+        let mut registry = Self::new();
+        registry.register("json", || Box::new(JsonReporter::default()));
+        registry.register("text", || Box::new(TextReporter));
+        registry
+    }
 }
 
 /// Discovers mutants in every file matching `pattern`, without running any
@@ -184,7 +261,7 @@ pub fn run_mutate(config: &Config) -> Result<MutateSummary, String> {
     let mut cache = config.cache.as_deref().map(|p| MutantCache::load(Path::new(p)));
     let mut cache_hits_total = 0;
     let mut per_file: Vec<FileMutantResults> = Vec::new();
-    let mutators = build_mutators(&config.mutator_packs);
+    let mutators = MutatorRegistry::default().build(&config.mutator_packs)?;
 
     for file in &files {
         let (results, hits) = switch_one_file(
@@ -231,4 +308,59 @@ pub fn run_mutate(config: &Config) -> Result<MutateSummary, String> {
         cache_hits: cache_hits_total,
         total_mutants,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mutator_registry_includes_react_by_default() {
+        assert_eq!(MutatorRegistry::default().names(), vec!["react"]);
+    }
+
+    #[test]
+    fn mutator_registry_builds_core_catalog_with_no_packs_requested() {
+        let core_len = mtr_mutators::default_mutators().len();
+        let mutators = MutatorRegistry::default().build(&[]).unwrap();
+        assert_eq!(mutators.len(), core_len);
+    }
+
+    #[test]
+    fn mutator_registry_extends_with_a_registered_pack() {
+        let core_len = mtr_mutators::default_mutators().len();
+        let react_len = mtr_mutators_react::mutators().len();
+        let mutators = MutatorRegistry::default().build(&["react".to_string()]).unwrap();
+        assert_eq!(mutators.len(), core_len + react_len);
+    }
+
+    #[test]
+    fn mutator_registry_rejects_unknown_pack_without_panicking() {
+        let Err(err) = MutatorRegistry::default().build(&["unknown".to_string()]) else {
+            panic!("expected an error for an unregistered pack");
+        };
+        assert!(err.contains("unknown"), "error should name the bad pack: {err}");
+        assert!(err.contains("react"), "error should list available packs: {err}");
+    }
+
+    #[test]
+    fn mutator_registry_accepts_a_custom_registration() {
+        let mut registry = MutatorRegistry::new();
+        registry.register("custom", Vec::new);
+        assert!(registry.build(&["custom".to_string()]).is_ok());
+    }
+
+    #[test]
+    fn reporter_registry_includes_json_and_text_by_default() {
+        assert_eq!(ReporterRegistry::default().names(), vec!["json", "text"]);
+    }
+
+    #[test]
+    fn reporter_registry_rejects_unknown_reporter_without_panicking() {
+        let Err(err) = ReporterRegistry::default().build(&["unknown".to_string()]) else {
+            panic!("expected an error for an unregistered reporter");
+        };
+        assert!(err.contains("unknown"), "error should name the bad reporter: {err}");
+        assert!(err.contains("json"), "error should list available reporters: {err}");
+    }
 }

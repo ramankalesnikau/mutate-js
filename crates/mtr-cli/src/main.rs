@@ -3,10 +3,9 @@ use std::time::Duration;
 
 use clap::{Parser as ClapParser, Subcommand, ValueEnum};
 use mtr_cache::{mutant_signature, MutantCache};
-use mtr_core::{build_mutators, scan_files, scope_to_diff, switch_one_file};
+use mtr_core::{scan_files, scope_to_diff, switch_one_file, MutatorRegistry, ReporterRegistry};
 use mtr_mutators::apply_mutant;
-use mtr_reporter_api::{FileMutantResults, Reporter};
-use mtr_reporters::{JsonReporter, TextReporter};
+use mtr_reporter_api::FileMutantResults;
 use mtr_runner_jest::JestRunner;
 use mtr_runner_vitest::VitestRunner;
 use mtr_test_runner_api::run_with_file_swapped;
@@ -121,7 +120,7 @@ fn main() {
 
 fn scan(pattern: &str, react: bool) {
     let packs = if react { vec!["react".to_string()] } else { Vec::new() };
-    let mutators = build_mutators(&packs);
+    let mutators = MutatorRegistry::default().build(&packs).unwrap_or_else(|e| panic!("{e}"));
     let results = scan_files(pattern, &mutators).unwrap_or_else(|e| panic!("{e}"));
     println!("{}", serde_json::to_string_pretty(&results).unwrap());
 }
@@ -247,8 +246,11 @@ fn mutate(config_path: Option<String>) {
     let mut cache = config.cache.as_deref().map(|p| MutantCache::load(Path::new(p)));
     let mut cache_hits_total = 0;
     let mut per_file: Vec<FileMutantResults> = Vec::new();
-    let mut reporters = build_reporters(&config.reporters);
-    let mutators = build_mutators(&config.mutator_packs);
+    let mut reporters = ReporterRegistry::default()
+        .build(&config.reporters)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let mutators =
+        MutatorRegistry::default().build(&config.mutator_packs).unwrap_or_else(|e| panic!("{e}"));
 
     for file in &files {
         let (results, hits) = switch_one_file(
@@ -304,19 +306,6 @@ fn mutate(config_path: Option<String>) {
             std::process::exit(1);
         }
     }
-}
-
-fn build_reporters(names: &[String]) -> Vec<Box<dyn Reporter>> {
-    names
-        .iter()
-        .map(|name| -> Box<dyn Reporter> {
-            match name.as_str() {
-                "json" => Box::new(JsonReporter::default()),
-                "text" => Box::new(TextReporter),
-                other => panic!("unknown reporter `{other}` (expected `json` or `text`)"),
-            }
-        })
-        .collect()
 }
 
 fn save_cache_and_report(
