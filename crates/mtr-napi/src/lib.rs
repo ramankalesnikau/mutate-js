@@ -16,7 +16,7 @@ use napi::bindgen_prelude::*;
 pub fn scan(glob: String, react: bool) -> Result<String> {
     let packs = if react { vec!["react".to_string()] } else { Vec::new() };
     let mutators = mtr_core::MutatorRegistry::default()
-        .build(&packs)
+        .build(&packs, &[])
         .map_err(|e| Error::new(Status::GenericFailure, e))?;
     let results = mtr_core::scan_files(&glob, &mutators)
         .map_err(|e| Error::new(Status::GenericFailure, e))?;

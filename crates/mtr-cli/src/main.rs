@@ -120,7 +120,7 @@ fn main() {
 
 fn scan(pattern: &str, react: bool) {
     let packs = if react { vec!["react".to_string()] } else { Vec::new() };
-    let mutators = MutatorRegistry::default().build(&packs).unwrap_or_else(|e| panic!("{e}"));
+    let mutators = MutatorRegistry::default().build(&packs, &[]).unwrap_or_else(|e| panic!("{e}"));
     let results = scan_files(pattern, &mutators).unwrap_or_else(|e| panic!("{e}"));
     println!("{}", serde_json::to_string_pretty(&results).unwrap());
 }
@@ -249,8 +249,9 @@ fn mutate(config_path: Option<String>) {
     let mut reporters = ReporterRegistry::default()
         .build(&config.reporters)
         .unwrap_or_else(|e| panic!("{e}"));
-    let mutators =
-        MutatorRegistry::default().build(&config.mutator_packs).unwrap_or_else(|e| panic!("{e}"));
+    let mutators = MutatorRegistry::default()
+        .build(&config.mutator_packs, &config.excluded_mutators)
+        .unwrap_or_else(|e| panic!("{e}"));
 
     for file in &files {
         let (results, hits) = switch_one_file(

@@ -55,6 +55,12 @@ pub struct Config {
     /// Extra mutator packs to include alongside the core catalog, e.g. `["react"]`.
     #[serde(default)]
     pub mutator_packs: Vec<String>,
+    /// Operator names (e.g. `["StringLiteral", "ArrayDeclaration"]`) to
+    /// exclude from the mutator catalog, core and packs alike. Use this to
+    /// silence a chronically noisy operator instead of ignoring every
+    /// mutant it produces one by one.
+    #[serde(default)]
+    pub excluded_mutators: Vec<String>,
 }
 
 fn default_mutate() -> Vec<String> {
@@ -87,6 +93,7 @@ impl Default for Config {
             thresholds: None,
             reporters: default_reporters(),
             mutator_packs: Vec::new(),
+            excluded_mutators: Vec::new(),
         }
     }
 }

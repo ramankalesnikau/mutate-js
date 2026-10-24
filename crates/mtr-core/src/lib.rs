@@ -51,8 +51,14 @@ impl MutatorRegistry {
     }
 
     /// Combines the core mutator catalog (always included) with every named
-    /// pack, in the order requested.
-    pub fn build(&self, requested: &[String]) -> Result<Vec<Box<dyn Mutator>>, String> {
+    /// pack, in the order requested, then drops any operator (by
+    /// `Mutator::name()`) listed in `excluded` — applied after assembly so
+    /// it works uniformly across the core catalog and every pack.
+    pub fn build(
+        &self,
+        requested: &[String],
+        excluded: &[String],
+    ) -> Result<Vec<Box<dyn Mutator>>, String> {
         let mut mutators = mtr_mutators::default_mutators();
         for name in requested {
             let factory = self.packs.get(name.as_str()).ok_or_else(|| {
@@ -60,6 +66,7 @@ impl MutatorRegistry {
             })?;
             mutators.extend(factory());
         }
+        mutators.retain(|m| !excluded.iter().any(|name| name == m.name()));
         Ok(mutators)
     }
 }
@@ -261,7 +268,8 @@ pub fn run_mutate(config: &Config) -> Result<MutateSummary, String> {
     let mut cache = config.cache.as_deref().map(|p| MutantCache::load(Path::new(p)));
     let mut cache_hits_total = 0;
     let mut per_file: Vec<FileMutantResults> = Vec::new();
-    let mutators = MutatorRegistry::default().build(&config.mutator_packs)?;
+    let mutators =
+        MutatorRegistry::default().build(&config.mutator_packs, &config.excluded_mutators)?;
 
     for file in &files {
         let (results, hits) = switch_one_file(
@@ -322,7 +330,7 @@ mod tests {
     #[test]
     fn mutator_registry_builds_core_catalog_with_no_packs_requested() {
         let core_len = mtr_mutators::default_mutators().len();
-        let mutators = MutatorRegistry::default().build(&[]).unwrap();
+        let mutators = MutatorRegistry::default().build(&[], &[]).unwrap();
         assert_eq!(mutators.len(), core_len);
     }
 
@@ -330,13 +338,13 @@ mod tests {
     fn mutator_registry_extends_with_a_registered_pack() {
         let core_len = mtr_mutators::default_mutators().len();
         let react_len = mtr_mutators_react::mutators().len();
-        let mutators = MutatorRegistry::default().build(&["react".to_string()]).unwrap();
+        let mutators = MutatorRegistry::default().build(&["react".to_string()], &[]).unwrap();
         assert_eq!(mutators.len(), core_len + react_len);
     }
 
     #[test]
     fn mutator_registry_rejects_unknown_pack_without_panicking() {
-        let Err(err) = MutatorRegistry::default().build(&["unknown".to_string()]) else {
+        let Err(err) = MutatorRegistry::default().build(&["unknown".to_string()], &[]) else {
             panic!("expected an error for an unregistered pack");
         };
         assert!(err.contains("unknown"), "error should name the bad pack: {err}");
@@ -347,7 +355,22 @@ mod tests {
     fn mutator_registry_accepts_a_custom_registration() {
         let mut registry = MutatorRegistry::new();
         registry.register("custom", Vec::new);
-        assert!(registry.build(&["custom".to_string()]).is_ok());
+        assert!(registry.build(&["custom".to_string()], &[]).is_ok());
+    }
+
+    #[test]
+    fn mutator_registry_excludes_named_operators_from_the_core_catalog() {
+        let mutators =
+            MutatorRegistry::default().build(&[], &["StringLiteral".to_string()]).unwrap();
+        assert!(mutators.iter().all(|m| m.name() != "StringLiteral"));
+    }
+
+    #[test]
+    fn mutator_registry_excludes_named_operators_from_a_pack_too() {
+        let mutators = MutatorRegistry::default()
+            .build(&["react".to_string()], &["JsxBooleanAttribute".to_string()])
+            .unwrap();
+        assert!(mutators.iter().all(|m| m.name() != "JsxBooleanAttribute"));
     }
 
     #[test]

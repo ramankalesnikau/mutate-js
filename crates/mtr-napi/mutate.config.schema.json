@@ -19,6 +19,14 @@
       ],
       "default": null
     },
+    "excludedMutators": {
+      "description": "Operator names (e.g. `[\"StringLiteral\", \"ArrayDeclaration\"]`) to\nexclude from the mutator catalog, core and packs alike. Use this to\nsilence a chronically noisy operator instead of ignoring every\nmutant it produces one by one.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
     "ignorePatterns": {
       "description": "Glob patterns to exclude from `mutate`.",
       "type": "array",
