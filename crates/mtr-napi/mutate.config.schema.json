@@ -19,6 +19,11 @@
       ],
       "default": null
     },
+    "dryRun": {
+      "description": "Run the test suite once, unmutated, before mutation testing and abort\nif it fails — a red suite makes every mutant result meaningless.",
+      "type": "boolean",
+      "default": true
+    },
     "excludedMutators": {
       "description": "Operator names (e.g. `[\"StringLiteral\", \"ArrayDeclaration\"]`) to\nexclude from the mutator catalog, core and packs alike. Use this to\nsilence a chronically noisy operator instead of ignoring every\nmutant it produces one by one.",
       "type": "array",

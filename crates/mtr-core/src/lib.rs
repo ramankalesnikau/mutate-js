@@ -16,7 +16,7 @@ use mtr_reporters::{HtmlReporter, JsonReporter, TextReporter};
 use mtr_runner_jest::JestRunner;
 use mtr_runner_vitest::VitestRunner;
 use mtr_test_runner_api::{
-    run_with_instrumented_file, run_with_instrumented_file_targeted, DynTestRunner,
+    run_with_instrumented_file, run_with_instrumented_file_targeted, DynTestRunner, RunOptions,
 };
 use mtr_types::{Mutant, MutantId, MutantResult, MutantStatus};
 use oxc_span::SourceType;
@@ -396,6 +396,20 @@ pub fn run_mutate(config: &Config) -> Result<MutateSummary, String> {
     let mutators =
         MutatorRegistry::default().build(&config.mutator_packs, &config.excluded_mutators)?;
     let runner = TestRunnerRegistry::default().build(&config.test_runner, &config.project, timeout)?;
+
+    if config.dry_run {
+        let status = runner.run(RunOptions {
+            active_mutant: None,
+            related_to_file: None,
+            only_tests: None,
+        });
+        if status != MutantStatus::Survived {
+            return Err(format!(
+                "dry run failed: the test suite did not pass before mutating (status: {status:?}); \
+                 fix the suite or set `dryRun: false`"
+            ));
+        }
+    }
 
     for file in &files {
         let (results, hits, source) = match config.test_filter.as_str() {

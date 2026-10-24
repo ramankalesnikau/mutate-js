@@ -38,6 +38,10 @@ pub struct Config {
     /// `mtr-core`'s `TestRunner::collect_coverage`).
     #[serde(default = "default_test_filter")]
     pub test_filter: String,
+    /// Run the test suite once, unmutated, before mutation testing and abort
+    /// if it fails — a red suite makes every mutant result meaningless.
+    #[serde(default = "default_true")]
+    pub dry_run: bool,
     /// Path to a content-hash cache file; omit to disable caching.
     #[serde(default)]
     pub cache: Option<String>,
@@ -76,6 +80,10 @@ fn default_test_filter() -> String {
     "all".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_timeout_secs() -> u64 {
     30
 }
@@ -93,6 +101,7 @@ impl Default for Config {
             test_runner: default_test_runner(),
             timeout_secs: default_timeout_secs(),
             test_filter: default_test_filter(),
+            dry_run: default_true(),
             cache: None,
             changed_since: None,
             thresholds: None,
@@ -122,10 +131,17 @@ mod tests {
         assert_eq!(config.project, ".");
         assert_eq!(config.timeout_secs, 30);
         assert_eq!(config.test_filter, "all");
+        assert!(config.dry_run);
         assert_eq!(config.test_runner, "jest");
         assert!(config.thresholds.is_none());
         assert_eq!(config.reporters, vec!["json".to_string()]);
         assert!(config.mutator_packs.is_empty());
+    }
+
+    #[test]
+    fn dry_run_can_be_disabled() {
+        let config: Config = json5::from_str("{ dryRun: false }").unwrap();
+        assert!(!config.dry_run);
     }
 
     #[test]
