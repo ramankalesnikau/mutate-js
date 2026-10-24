@@ -33,19 +33,22 @@ const VITEST_COVERAGE_SETUP: &str = r#"
 import { beforeEach, afterEach } from 'vitest';
 
 let __mtrSnapshot = {};
+let __mtrBaseline = null;
 beforeEach(() => {
   __mtrSnapshot = JSON.parse(JSON.stringify(globalThis.__VITEST_COVERAGE__ || {}));
+  if (__mtrBaseline === null) __mtrBaseline = __mtrSnapshot;
 });
 afterEach((ctx) => {
   const current = globalThis.__VITEST_COVERAGE__ || {};
   const result = {};
   for (const file in current) {
     const beforeS = __mtrSnapshot[file] ? __mtrSnapshot[file].s : {};
+    const baselineS = __mtrBaseline && __mtrBaseline[file] ? __mtrBaseline[file].s : {};
     const afterS = current[file].s;
     const statementMap = current[file].statementMap;
     const touched = [];
     for (const id in afterS) {
-      if (afterS[id] > (beforeS[id] || 0)) {
+      if (afterS[id] > (beforeS[id] || 0) || (baselineS[id] || 0) > 0) {
         touched.push(statementMap[id]);
       }
     }

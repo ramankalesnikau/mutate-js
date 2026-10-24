@@ -26,6 +26,7 @@ impl Mutator for JsxBooleanAttributeMutator {
             enclosing_span: Span { start: lit.span.start, end: lit.span.end },
             original: lit.value.to_string(),
             replacement: (!lit.value).to_string(),
+            kind: mtr_types::MutantKind::Expression,
         }]
     }
 }

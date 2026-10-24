@@ -29,19 +29,27 @@ struct JestSummary {
 /// CommonJS regardless of the project's own `"type": "module"` setting.
 const JEST_COVERAGE_SETUP: &str = r#"
 let __mtrSnapshot = {};
+let __mtrBaseline = null;
 beforeEach(() => {
   __mtrSnapshot = JSON.parse(JSON.stringify(global.__coverage__ || {}));
+  if (__mtrBaseline === null) __mtrBaseline = __mtrSnapshot;
 });
 afterEach(() => {
   const current = global.__coverage__ || {};
   const result = {};
   for (const file in current) {
     const beforeS = __mtrSnapshot[file] ? __mtrSnapshot[file].s : {};
+    // Module-level code (imports, `module.exports`, top-level statements)
+    // runs before the first `beforeEach`, so it never shows up as a per-test
+    // diff. Attribute that baseline coverage to every test in the process —
+    // it was executed in this process, so any of these tests can kill a
+    // mutant living there.
+    const baselineS = __mtrBaseline && __mtrBaseline[file] ? __mtrBaseline[file].s : {};
     const afterS = current[file].s;
     const statementMap = current[file].statementMap;
     const touched = [];
     for (const id in afterS) {
-      if (afterS[id] > (beforeS[id] || 0)) {
+      if (afterS[id] > (beforeS[id] || 0) || (baselineS[id] || 0) > 0) {
         touched.push(statementMap[id]);
       }
     }

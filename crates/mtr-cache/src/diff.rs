@@ -81,6 +81,7 @@ mod tests {
             enclosing_span: Span { start, end },
             original: String::new(),
             replacement: String::new(),
+            kind: mtr_types::MutantKind::Expression,
         }
     }
 }

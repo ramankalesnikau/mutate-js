@@ -9,6 +9,17 @@ pub struct Span {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub struct MutantId(pub u32);
 
+/// Whether a mutant's `enclosing_span` is an expression (safe to wrap in a
+/// `cond ? mutated : original` ternary) or a statement block, e.g. a function
+/// body (which must be wrapped in `if/else` instead — a bare block is not an
+/// expression and would be a syntax error inside a ternary).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MutantKind {
+    #[default]
+    Expression,
+    Block,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Mutant {
     pub id: MutantId,
@@ -21,6 +32,10 @@ pub struct Mutant {
     pub enclosing_span: Span,
     pub original: String,
     pub replacement: String,
+    /// Not serialized: this is an instrumentation concern only, and adding it
+    /// to report output would change the public JSON shape for no consumer.
+    #[serde(skip)]
+    pub kind: MutantKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

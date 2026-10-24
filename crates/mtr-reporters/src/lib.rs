@@ -276,6 +276,7 @@ mod tests {
                 enclosing_span: Span { start: span.0, end: span.1 },
                 original: original.to_string(),
                 replacement: replacement.to_string(),
+                kind: mtr_types::MutantKind::Expression,
             },
             status,
         }

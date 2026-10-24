@@ -199,10 +199,18 @@ fn changed_since_scopes_to_only_the_modified_mutant() {
 
     std::fs::write(&file, &original).unwrap();
 
-    assert_eq!(
-        scoped.len(),
-        1,
-        "only the mutant on the changed line should survive diff scoping, got {scoped:#?}"
+    // Two mutants overlap the changed line: the equality operator itself, and
+    // the body of `isEqual` (which contains that line). Mutants elsewhere in
+    // the file — e.g. `defaultActive`'s body — must be excluded.
+    assert!(scoped.iter().any(|m| m.operator == "EqualityOperator"), "got {scoped:#?}");
+    assert!(
+        scoped.iter().all(|m| {
+            mtr_cache::mutant_touches_changed_lines(m, &modified, &changed)
+        }),
+        "every scoped mutant must touch a changed line: {scoped:#?}"
     );
-    assert_eq!(scoped[0].operator, "EqualityOperator");
+    assert!(
+        scoped.iter().all(|m| m.operator == "EqualityOperator" || m.operator == "MethodExpression"),
+        "no mutant from an unchanged function should survive scoping: {scoped:#?}"
+    );
 }

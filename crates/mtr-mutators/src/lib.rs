@@ -1,10 +1,12 @@
-use mtr_types::{Mutant, MutantId, Span};
+use mtr_types::{Mutant, MutantId, MutantKind, Span};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, ArrayExpression, AssignmentExpression, BinaryExpression, BooleanLiteral,
-    CallExpression, ConditionalExpression, Directive, Expression, ExportAllDeclaration,
-    ExportFromDeclaration, ImportDeclaration, ImportExpression, JSXAttribute, LogicalExpression,
-    StringLiteral, UnaryExpression, UpdateExpression,
+    Argument, ArrayExpression, ArrowFunctionBody, ArrowFunctionExpression, AssignmentExpression,
+    BinaryExpression, BlockStatement, BooleanLiteral, CallExpression, ComputedMemberExpression,
+    ConditionalExpression, Directive, Expression, ExportAllDeclaration, ExportFromDeclaration,
+    Function, ImportDeclaration, ImportExpression, JSXAttribute, LogicalExpression,
+    ObjectExpression, RegExpLiteral, StaticMemberExpression, StringLiteral, UnaryExpression,
+    UpdateExpression,
 };
 use oxc_ast_visit::{walk, Visit};
 use oxc_parser::Parser;
@@ -19,6 +21,21 @@ pub struct MutantCandidate {
     pub enclosing_span: Span,
     pub original: String,
     pub replacement: String,
+    pub kind: MutantKind,
+}
+
+impl MutantCandidate {
+    /// An expression-position mutant — the common case, wrappable in a
+    /// ternary by the switch instrumenter.
+    fn expression(
+        operator: &'static str,
+        span: Span,
+        enclosing_span: Span,
+        original: String,
+        replacement: String,
+    ) -> Self {
+        Self { operator, span, enclosing_span, original, replacement, kind: MutantKind::Expression }
+    }
 }
 
 pub trait Mutator {
@@ -65,6 +82,58 @@ pub trait Mutator {
     fn discover_jsx_attribute(&self, _attr: &JSXAttribute, _source: &str) -> Vec<MutantCandidate> {
         Vec::new()
     }
+    fn discover_block_statement(
+        &self,
+        _block: &BlockStatement,
+        _source: &str,
+    ) -> Vec<MutantCandidate> {
+        Vec::new()
+    }
+    fn discover_function(&self, _func: &Function, _source: &str) -> Vec<MutantCandidate> {
+        Vec::new()
+    }
+    fn discover_arrow_function(
+        &self,
+        _func: &ArrowFunctionExpression,
+        _source: &str,
+    ) -> Vec<MutantCandidate> {
+        Vec::new()
+    }
+    fn discover_object_expression(
+        &self,
+        _expr: &ObjectExpression,
+        _source: &str,
+    ) -> Vec<MutantCandidate> {
+        Vec::new()
+    }
+    fn discover_static_member(
+        &self,
+        _expr: &StaticMemberExpression,
+        _source: &str,
+    ) -> Vec<MutantCandidate> {
+        Vec::new()
+    }
+    fn discover_computed_member(
+        &self,
+        _expr: &ComputedMemberExpression,
+        _source: &str,
+    ) -> Vec<MutantCandidate> {
+        Vec::new()
+    }
+    fn discover_call_expression(
+        &self,
+        _expr: &CallExpression,
+        _source: &str,
+    ) -> Vec<MutantCandidate> {
+        Vec::new()
+    }
+    fn discover_regex_literal(
+        &self,
+        _lit: &RegExpLiteral,
+        _source: &str,
+    ) -> Vec<MutantCandidate> {
+        Vec::new()
+    }
 }
 
 /// `BinaryExpression::span` covers the whole `left op right` expression, not
@@ -100,6 +169,7 @@ impl Mutator for ArithmeticOperatorMutator {
             enclosing_span: Span { start: expr.span.start, end: expr.span.end },
             original: expr.operator.as_str().to_string(),
             replacement: replacement.to_string(),
+            kind: MutantKind::Expression,
         }]
     }
 }
@@ -125,6 +195,7 @@ impl Mutator for EqualityOperatorMutator {
             enclosing_span: Span { start: expr.span.start, end: expr.span.end },
             original: expr.operator.as_str().to_string(),
             replacement: replacement.to_string(),
+            kind: MutantKind::Expression,
         }]
     }
 }
@@ -143,6 +214,7 @@ impl Mutator for BooleanLiteralMutator {
             enclosing_span: Span { start: lit.span.start, end: lit.span.end },
             original: lit.value.to_string(),
             replacement: (!lit.value).to_string(),
+            kind: MutantKind::Expression,
         }]
     }
 }
@@ -182,6 +254,7 @@ impl Mutator for LogicalOperatorMutator {
             enclosing_span: Span { start: expr.span.start, end: expr.span.end },
             original: expr.operator.as_str().to_string(),
             replacement: replacement.to_string(),
+            kind: MutantKind::Expression,
         }]
     }
 }
@@ -210,6 +283,7 @@ impl Mutator for UnaryOperatorMutator {
             enclosing_span: Span { start: expr.span.start, end: expr.span.end },
             original: expr.operator.as_str().to_string(),
             replacement: replacement.to_string(),
+            kind: MutantKind::Expression,
         }]
     }
 }
@@ -243,6 +317,7 @@ impl Mutator for UpdateOperatorMutator {
             enclosing_span: Span { start: expr.span.start, end: expr.span.end },
             original: op.to_string(),
             replacement: replacement.to_string(),
+            kind: MutantKind::Expression,
         }]
     }
 }
@@ -275,6 +350,7 @@ impl Mutator for AssignmentOperatorMutator {
             enclosing_span: Span { start: expr.span.start, end: expr.span.end },
             original: op.to_string(),
             replacement: replacement.to_string(),
+            kind: MutantKind::Expression,
         }]
     }
 }
@@ -301,6 +377,7 @@ impl Mutator for ConditionalExpressionMutator {
             enclosing_span: Span { start: expr.span.start, end: expr.span.end },
             original: format!("{consequent_text} : {alternate_text}"),
             replacement: format!("{alternate_text} : {consequent_text}"),
+            kind: MutantKind::Expression,
         }]
     }
 }
@@ -334,6 +411,7 @@ impl Mutator for StringLiteralMutator {
             enclosing_span: Span { start: lit.span.start, end: lit.span.end },
             original: text.to_string(),
             replacement,
+            kind: MutantKind::Expression,
         }]
     }
 }
@@ -364,7 +442,228 @@ impl Mutator for ArrayDeclarationMutator {
             enclosing_span: Span { start: expr.span.start, end: expr.span.end },
             original: text.to_string(),
             replacement: "[]".to_string(),
+            kind: MutantKind::Expression,
         }]
+    }
+}
+
+/// Empties a standalone block statement: `{ ... }` becomes `{}`. This is a
+/// block-position mutant (`MutantKind::Block`) — the instrumenter wraps it in
+/// `if/else`, not a ternary. Function/method/arrow bodies are `FunctionBody`
+/// nodes, not `BlockStatement`, and are covered by `MethodExpressionMutator`.
+pub struct BlockStatementMutator;
+
+impl Mutator for BlockStatementMutator {
+    fn name(&self) -> &'static str {
+        "BlockStatement"
+    }
+
+    fn discover_block_statement(&self, block: &BlockStatement, source: &str) -> Vec<MutantCandidate> {
+        if block.body.is_empty() {
+            return Vec::new();
+        }
+        let span = Span { start: block.span.start, end: block.span.end };
+        let text = &source[span.start as usize..span.end as usize];
+        vec![MutantCandidate {
+            operator: self.name(),
+            span,
+            enclosing_span: span,
+            original: text.to_string(),
+            replacement: "{}".to_string(),
+            kind: MutantKind::Block,
+        }]
+    }
+}
+
+/// Replaces a function/method/arrow body with an empty block. `Function`
+/// covers function declarations, function expressions, and class/object
+/// method bodies (the scanner visits methods' `Function` through
+/// `walk_method_definition`); `ArrowFunctionExpression` is a separate node in
+/// oxc. Bodies with no statements (or none at all, e.g. overload signatures)
+/// are skipped — there is nothing to empty.
+pub struct MethodExpressionMutator;
+
+impl MethodExpressionMutator {
+    fn from_body(body_span: Span, source: &str) -> Vec<MutantCandidate> {
+        let text = &source[body_span.start as usize..body_span.end as usize];
+        vec![MutantCandidate {
+            operator: "MethodExpression",
+            span: body_span,
+            enclosing_span: body_span,
+            original: text.to_string(),
+            replacement: "{}".to_string(),
+            kind: MutantKind::Block,
+        }]
+    }
+}
+
+impl Mutator for MethodExpressionMutator {
+    fn name(&self) -> &'static str {
+        "MethodExpression"
+    }
+
+    fn discover_function(&self, func: &Function, source: &str) -> Vec<MutantCandidate> {
+        let Some(body) = &func.body else { return Vec::new() };
+        if body.statements.is_empty() {
+            return Vec::new();
+        }
+        Self::from_body(Span { start: body.span.start, end: body.span.end }, source)
+    }
+
+    fn discover_arrow_function(
+        &self,
+        func: &ArrowFunctionExpression,
+        source: &str,
+    ) -> Vec<MutantCandidate> {
+        let ArrowFunctionBody::FunctionBody(body) = &func.body else { return Vec::new() };
+        if body.statements.is_empty() {
+            return Vec::new();
+        }
+        Self::from_body(Span { start: body.span.start, end: body.span.end }, source)
+    }
+}
+
+/// Empties an object literal: `{ a: 1, b: 2 }` becomes `{}`.
+pub struct ObjectLiteralMutator;
+
+impl Mutator for ObjectLiteralMutator {
+    fn name(&self) -> &'static str {
+        "ObjectLiteral"
+    }
+
+    fn discover_object_expression(
+        &self,
+        expr: &ObjectExpression,
+        source: &str,
+    ) -> Vec<MutantCandidate> {
+        if expr.properties.is_empty() {
+            return Vec::new();
+        }
+        let span = Span { start: expr.span.start, end: expr.span.end };
+        let text = &source[span.start as usize..span.end as usize];
+        vec![MutantCandidate::expression(
+            self.name(),
+            span,
+            span,
+            text.to_string(),
+            "{}".to_string(),
+        )]
+    }
+}
+
+/// Finds the `?.` token that makes a member/call optional. `from` is the end
+/// of the receiver (object/callee) and `to` the end of the whole expression;
+/// the optional token sits in that gap.
+fn optional_chain_span(from: u32, to: u32, source: &str) -> Option<Span> {
+    let gap = &source[from as usize..to as usize];
+    let offset = gap.find("?.")?;
+    Some(Span { start: from + offset as u32, end: from + offset as u32 + 2 })
+}
+
+/// Removes optional chaining: `a?.b` becomes `a.b`, `f?.()` becomes `f()`.
+/// Each `?.` in a chain is its own mutant.
+pub struct OptionalChainingMutator;
+
+impl Mutator for OptionalChainingMutator {
+    fn name(&self) -> &'static str {
+        "OptionalChaining"
+    }
+
+    fn discover_static_member(
+        &self,
+        expr: &StaticMemberExpression,
+        source: &str,
+    ) -> Vec<MutantCandidate> {
+        if !expr.optional {
+            return Vec::new();
+        }
+        Self::candidate(
+            Span { start: expr.span.start, end: expr.span.end },
+            expr.object.span().end,
+            expr.span.end,
+            source,
+            ".",
+        )
+    }
+
+    fn discover_computed_member(
+        &self,
+        expr: &ComputedMemberExpression,
+        source: &str,
+    ) -> Vec<MutantCandidate> {
+        if !expr.optional {
+            return Vec::new();
+        }
+        Self::candidate(
+            Span { start: expr.span.start, end: expr.span.end },
+            expr.object.span().end,
+            expr.span.end,
+            source,
+            "",
+        )
+    }
+
+    fn discover_call_expression(
+        &self,
+        expr: &CallExpression,
+        source: &str,
+    ) -> Vec<MutantCandidate> {
+        if !expr.optional {
+            return Vec::new();
+        }
+        Self::candidate(
+            Span { start: expr.span.start, end: expr.span.end },
+            expr.callee.span().end,
+            expr.span.end,
+            source,
+            "",
+        )
+    }
+}
+
+impl OptionalChainingMutator {
+    /// `replacement` is "." for `a?.b` (the `.` is part of the removed token)
+    /// but "" for `a?.[k]` / `a?.()` (the `[` or `(` that stays is the
+    /// separator) — otherwise the result would be `a.b` vs invalid `a.[k]`.
+    fn candidate(
+        expr_span: Span,
+        from: u32,
+        to: u32,
+        source: &str,
+        replacement: &str,
+    ) -> Vec<MutantCandidate> {
+        let Some(span) = optional_chain_span(from, to, source) else { return Vec::new() };
+        vec![MutantCandidate::expression(
+            "OptionalChaining",
+            span,
+            expr_span,
+            "?.".to_string(),
+            replacement.to_string(),
+        )]
+    }
+}
+
+/// Replaces a regular expression literal with `/x/`.
+pub struct RegexMutator;
+
+impl Mutator for RegexMutator {
+    fn name(&self) -> &'static str {
+        "Regex"
+    }
+
+    fn discover_regex_literal(&self, lit: &RegExpLiteral, source: &str) -> Vec<MutantCandidate> {
+        let span = Span { start: lit.span.start, end: lit.span.end };
+        let text = &source[span.start as usize..span.end as usize];
+        if lit.regex.pattern.text.is_empty() || text == "/x/" {
+            return Vec::new();
+        }
+        vec![MutantCandidate::expression(
+            self.name(),
+            span,
+            span,
+            text.to_string(),
+            "/x/".to_string(),
+        )]
     }
 }
 
@@ -381,6 +680,11 @@ pub fn default_mutators() -> Vec<Box<dyn Mutator>> {
         Box::new(ConditionalExpressionMutator),
         Box::new(StringLiteralMutator),
         Box::new(ArrayDeclarationMutator),
+        Box::new(BlockStatementMutator),
+        Box::new(MethodExpressionMutator),
+        Box::new(ObjectLiteralMutator),
+        Box::new(OptionalChainingMutator),
+        Box::new(RegexMutator),
     ]
 }
 
@@ -416,6 +720,7 @@ impl<'m, 's> MutantScanner<'m, 's> {
                 enclosing_span: c.enclosing_span,
                 original: c.original,
                 replacement: c.replacement,
+                kind: c.kind,
             });
             self.next_id += 1;
         }
@@ -511,6 +816,69 @@ impl<'ast, 'm, 's> Visit<'ast> for MutantScanner<'m, 's> {
         walk::walk_jsx_attribute(self, it);
     }
 
+    fn visit_block_statement(&mut self, it: &BlockStatement<'ast>) {
+        let mutators = self.mutators;
+        for m in mutators {
+            let candidates = m.discover_block_statement(it, self.source);
+            self.push(candidates);
+        }
+        walk::walk_block_statement(self, it);
+    }
+
+    fn visit_function(&mut self, it: &Function<'ast>, flags: oxc_syntax::scope::ScopeFlags) {
+        let mutators = self.mutators;
+        for m in mutators {
+            let candidates = m.discover_function(it, self.source);
+            self.push(candidates);
+        }
+        walk::walk_function(self, it, flags);
+    }
+
+    fn visit_arrow_function_expression(&mut self, it: &ArrowFunctionExpression<'ast>) {
+        let mutators = self.mutators;
+        for m in mutators {
+            let candidates = m.discover_arrow_function(it, self.source);
+            self.push(candidates);
+        }
+        walk::walk_arrow_function_expression(self, it);
+    }
+
+    fn visit_object_expression(&mut self, it: &ObjectExpression<'ast>) {
+        let mutators = self.mutators;
+        for m in mutators {
+            let candidates = m.discover_object_expression(it, self.source);
+            self.push(candidates);
+        }
+        walk::walk_object_expression(self, it);
+    }
+
+    fn visit_static_member_expression(&mut self, it: &StaticMemberExpression<'ast>) {
+        let mutators = self.mutators;
+        for m in mutators {
+            let candidates = m.discover_static_member(it, self.source);
+            self.push(candidates);
+        }
+        walk::walk_static_member_expression(self, it);
+    }
+
+    fn visit_computed_member_expression(&mut self, it: &ComputedMemberExpression<'ast>) {
+        let mutators = self.mutators;
+        for m in mutators {
+            let candidates = m.discover_computed_member(it, self.source);
+            self.push(candidates);
+        }
+        walk::walk_computed_member_expression(self, it);
+    }
+
+    fn visit_reg_exp_literal(&mut self, it: &RegExpLiteral<'ast>) {
+        let mutators = self.mutators;
+        for m in mutators {
+            let candidates = m.discover_regex_literal(it, self.source);
+            self.push(candidates);
+        }
+        walk::walk_reg_exp_literal(self, it);
+    }
+
     // The overrides below walk everything a module specifier's or directive's
     // string literal node normally would, except the call into
     // `visit_string_literal` itself — those strings are syntax (what to
@@ -556,6 +924,11 @@ impl<'ast, 'm, 's> Visit<'ast> for MutantScanner<'m, 's> {
     }
 
     fn visit_call_expression(&mut self, it: &CallExpression<'ast>) {
+        let mutators = self.mutators;
+        for m in mutators {
+            let candidates = m.discover_call_expression(it, self.source);
+            self.push(candidates);
+        }
         let Expression::Identifier(callee) = &it.callee else {
             return walk::walk_call_expression(self, it);
         };
@@ -794,5 +1167,91 @@ export * from "./z";
         let source = "const xs = [...ys];";
         let mutants = scan_source(source, SourceType::ts());
         assert!(only(&mutants, "ArrayDeclaration").is_empty());
+    }
+
+    #[test]
+    fn block_statement_empties_a_non_empty_block() {
+        // A standalone block (not a function body — that's MethodExpression).
+        let source = "if (x) { a(); b(); }";
+        let mutants = scan_source(source, SourceType::ts());
+        let found = only(&mutants, "BlockStatement");
+        assert_eq!(found.len(), 1, "{mutants:#?}");
+        assert_eq!(found[0].replacement, "{}");
+        assert_eq!(found[0].kind, mtr_types::MutantKind::Block);
+    }
+
+    #[test]
+    fn block_statement_ignores_an_empty_block() {
+        let mutants = scan_source("if (x) {}", SourceType::ts());
+        assert!(only(&mutants, "BlockStatement").is_empty());
+    }
+
+    #[test]
+    fn method_expression_empties_function_method_and_arrow_bodies() {
+        let source = r#"
+function f() { return 1; }
+class C { m() { return 2; } }
+const g = () => { return 3; };
+const h = () => 4;
+"#;
+        let mutants = scan_source(source, SourceType::ts());
+        let found = only(&mutants, "MethodExpression");
+        assert_eq!(found.len(), 3, "f, C.m and g have block bodies; h is expression-bodied: {mutants:#?}");
+        assert!(found.iter().all(|m| m.replacement == "{}"));
+    }
+
+    #[test]
+    fn object_literal_empties_a_non_empty_object() {
+        let mutants = scan_source("const o = { a: 1, b: 2 };", SourceType::ts());
+        let found = only(&mutants, "ObjectLiteral");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].replacement, "{}");
+    }
+
+    #[test]
+    fn object_literal_ignores_an_empty_object() {
+        let mutants = scan_source("const o = {};", SourceType::ts());
+        assert!(only(&mutants, "ObjectLiteral").is_empty());
+    }
+
+    #[test]
+    fn optional_chaining_removes_the_question_mark_dot() {
+        let source = "const a = obj?.prop;";
+        let mutants = scan_source(source, SourceType::ts());
+        let found = only(&mutants, "OptionalChaining");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].original, "?.");
+        // The `.` is part of the replaced token, so `a?.b` becomes `a.b`.
+        assert_eq!(found[0].replacement, ".");
+        assert_eq!(apply_mutant(source, found[0]), "const a = obj.prop;");
+    }
+
+    #[test]
+    fn optional_chaining_handles_computed_access_and_calls() {
+        let source = "obj?.[k]; fn?.();";
+        let mutants = scan_source(source, SourceType::ts());
+        assert_eq!(only(&mutants, "OptionalChaining").len(), 2);
+    }
+
+    #[test]
+    fn optional_chaining_ignores_plain_member_access() {
+        let mutants = scan_source("obj.prop;", SourceType::ts());
+        assert!(only(&mutants, "OptionalChaining").is_empty());
+    }
+
+    #[test]
+    fn regex_literal_is_replaced_with_x() {
+        let source = r#"const re = /ab+c/g;"#;
+        let mutants = scan_source(source, SourceType::mjs());
+        let found = only(&mutants, "Regex");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].replacement, "/x/");
+        assert_eq!(apply_mutant(source, found[0]), "const re = /x/;");
+    }
+
+    #[test]
+    fn regex_literal_ignores_an_already_mutated_regex() {
+        let mutants = scan_source("const re = /x/;", SourceType::mjs());
+        assert!(only(&mutants, "Regex").is_empty());
     }
 }
