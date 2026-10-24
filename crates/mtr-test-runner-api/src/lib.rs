@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mtr_types::{MutantId, MutantStatus};
 use serde::Deserialize;
@@ -70,7 +71,7 @@ pub trait TestRunner {
 /// `mtr-core`) hands back as `Box<DynTestRunner>`, so callers that pick a
 /// runner by config string rather than a concrete generic type still work
 /// with [`run_with_file_swapped`]/[`run_with_instrumented_file`].
-pub type DynTestRunner = dyn TestRunner + std::panic::RefUnwindSafe;
+pub type DynTestRunner = dyn TestRunner + std::panic::RefUnwindSafe + Send + Sync;
 
 /// Escapes regex metacharacters in a test name for safe use inside a `-t`
 /// alternation — test names are free text (can contain `.`, `(`, `[`, etc.),
@@ -218,9 +219,208 @@ pub fn run_with_instrumented_file_targeted<R: TestRunner + std::panic::RefUnwind
     }
 }
 
+/// Runs `count` jobs, at most `concurrency` at a time, returning
+/// `(index, status)` in index order. Workers pull indices from a shared
+/// counter and buffer their own results — no mutex, so no poisoning; the
+/// parent sorts by index, keeping output deterministic.
+fn run_jobs<'a, R, F>(
+    count: usize,
+    concurrency: usize,
+    runner: &R,
+    make_opts: F,
+) -> Vec<(usize, MutantStatus)>
+where
+    R: TestRunner + std::panic::RefUnwindSafe + Sync + ?Sized,
+    F: Fn(usize) -> RunOptions<'a> + Sync,
+{
+    let concurrency = concurrency.max(1).min(count.max(1));
+    if concurrency <= 1 || count <= 1 {
+        return (0..count).map(|index| (index, runner.run(make_opts(index)))).collect();
+    }
+
+    let next = AtomicUsize::new(0);
+    let mut results: Vec<(usize, MutantStatus)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..concurrency)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut local = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        if index >= count {
+                            break;
+                        }
+                        local.push((index, runner.run(make_opts(index))));
+                    }
+                    local
+                })
+            })
+            .collect();
+
+        let mut all = Vec::with_capacity(count);
+        for handle in handles {
+            all.extend(handle.join().expect("mutant worker thread panicked"));
+        }
+        all
+    });
+    results.sort_by_key(|(index, _)| *index);
+    results
+}
+
+/// Installs `instrumented_source`, runs `body`, then restores the original —
+/// on panic too. `body`'s value is discarded if it panicked, matching the
+/// sequential helpers' behavior.
+fn with_instrumented_file<T>(
+    file: &Path,
+    instrumented_source: &str,
+    body: impl FnOnce() -> T,
+) -> std::io::Result<T> {
+    let original = std::fs::read_to_string(file)?;
+    std::fs::write(file, instrumented_source)?;
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+
+    let restore = std::fs::write(file, &original);
+    match (result, restore) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(payload), _) => std::panic::resume_unwind(payload),
+    }
+}
+
+/// Like [`run_with_instrumented_file`], but runs the mutants concurrently.
+/// Safe because the instrumented file is written once and only read by the
+/// child processes, each of which receives its own `MTR_ACTIVE_MUTANT` via
+/// the environment. `concurrency <= 1` delegates to the sequential path.
+pub fn run_with_instrumented_file_parallel<'a, R>(
+    file: &Path,
+    instrumented_source: &str,
+    mutant_ids: &'a [MutantId],
+    related_to_file: Option<&'a Path>,
+    runner: &R,
+    concurrency: usize,
+) -> std::io::Result<Vec<(MutantId, MutantStatus)>>
+where
+    R: TestRunner + std::panic::RefUnwindSafe + Sync + ?Sized,
+{
+    if concurrency <= 1 || mutant_ids.len() <= 1 {
+        return run_with_instrumented_file(
+            file,
+            instrumented_source,
+            mutant_ids,
+            related_to_file,
+            runner,
+        );
+    }
+
+    with_instrumented_file(file, instrumented_source, || {
+        run_jobs(mutant_ids.len(), concurrency, runner, |index| RunOptions {
+            active_mutant: Some(mutant_ids[index]),
+            related_to_file,
+            only_tests: None,
+        })
+        .into_iter()
+        .map(|(index, status)| (mutant_ids[index], status))
+        .collect()
+    })
+}
+
+/// Like [`run_with_instrumented_file_targeted`], but runs each mutant's
+/// pre-resolved covering tests concurrently.
+pub fn run_with_instrumented_file_targeted_parallel<R>(
+    file: &Path,
+    instrumented_source: &str,
+    targeted: &[(MutantId, Vec<String>)],
+    runner: &R,
+    concurrency: usize,
+) -> std::io::Result<Vec<(MutantId, MutantStatus)>>
+where
+    R: TestRunner + std::panic::RefUnwindSafe + Sync + ?Sized,
+{
+    if concurrency <= 1 || targeted.len() <= 1 {
+        return run_with_instrumented_file_targeted(file, instrumented_source, targeted, runner);
+    }
+
+    with_instrumented_file(file, instrumented_source, || {
+        run_jobs(targeted.len(), concurrency, runner, |index| {
+            let (id, tests) = &targeted[index];
+            RunOptions {
+                active_mutant: Some(*id),
+                related_to_file: None,
+                only_tests: Some(tests.as_slice()),
+            }
+        })
+        .into_iter()
+        .map(|(index, status)| (targeted[index].0, status))
+        .collect()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    struct SlowRunner {
+        in_flight: AtomicUsize,
+        max_in_flight: AtomicUsize,
+        seen: Mutex<Vec<u32>>,
+    }
+
+    impl SlowRunner {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                in_flight: AtomicUsize::new(0),
+                max_in_flight: AtomicUsize::new(0),
+                seen: Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    impl TestRunner for SlowRunner {
+        fn run(&self, opts: RunOptions) -> MutantStatus {
+            let current = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_in_flight.fetch_max(current, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(15));
+            self.in_flight.fetch_sub(1, Ordering::SeqCst);
+            let id = opts.active_mutant.expect("test runner expects an active mutant").0;
+            self.seen.lock().unwrap().push(id);
+            MutantStatus::Killed
+        }
+    }
+
+    #[test]
+    fn run_jobs_preserves_index_order_and_actually_runs_in_parallel() {
+        let runner = SlowRunner::new();
+        let results = run_jobs(8, 4, runner.as_ref(), |index| RunOptions {
+            active_mutant: Some(MutantId(index as u32)),
+            related_to_file: None,
+            only_tests: None,
+        });
+
+        assert_eq!(results.len(), 8);
+        assert_eq!(results.iter().map(|(index, _)| *index).collect::<Vec<_>>(), (0..8).collect::<Vec<_>>());
+        assert!(results.iter().all(|(_, status)| *status == MutantStatus::Killed));
+        assert_eq!(runner.seen.lock().unwrap().len(), 8, "every job should have run");
+        assert!(
+            runner.max_in_flight.load(Ordering::SeqCst) > 1,
+            "expected concurrent execution, saw max {} in flight",
+            runner.max_in_flight.load(Ordering::SeqCst)
+        );
+    }
+
+    #[test]
+    fn run_jobs_with_concurrency_one_stays_sequential() {
+        let runner = SlowRunner::new();
+        let results = run_jobs(3, 1, runner.as_ref(), |index| RunOptions {
+            active_mutant: Some(MutantId(index as u32)),
+            related_to_file: None,
+            only_tests: None,
+        });
+        assert_eq!(results.len(), 3);
+        assert_eq!(runner.max_in_flight.load(Ordering::SeqCst), 1);
+    }
+
 
     #[test]
     fn escape_test_name_for_regex_escapes_metacharacters() {

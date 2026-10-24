@@ -42,6 +42,12 @@ pub struct Config {
     /// if it fails — a red suite makes every mutant result meaningless.
     #[serde(default = "default_true")]
     pub dry_run: bool,
+    /// How many mutants to test concurrently within one file. Defaults to 1
+    /// (opt-in): every Jest/Vitest invocation already fans out to its own
+    /// worker pool, so raising this can oversubscribe CPU and contend Vite's
+    /// dependency cache.
+    #[serde(default = "default_concurrency")]
+    pub concurrency: usize,
     /// Path to a content-hash cache file; omit to disable caching.
     #[serde(default)]
     pub cache: Option<String>,
@@ -84,6 +90,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_concurrency() -> usize {
+    1
+}
+
 fn default_timeout_secs() -> u64 {
     30
 }
@@ -102,6 +112,7 @@ impl Default for Config {
             timeout_secs: default_timeout_secs(),
             test_filter: default_test_filter(),
             dry_run: default_true(),
+            concurrency: default_concurrency(),
             cache: None,
             changed_since: None,
             thresholds: None,
@@ -132,6 +143,7 @@ mod tests {
         assert_eq!(config.timeout_secs, 30);
         assert_eq!(config.test_filter, "all");
         assert!(config.dry_run);
+        assert_eq!(config.concurrency, 1);
         assert_eq!(config.test_runner, "jest");
         assert!(config.thresholds.is_none());
         assert_eq!(config.reporters, vec!["json".to_string()]);

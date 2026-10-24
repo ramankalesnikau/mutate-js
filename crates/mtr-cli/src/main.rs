@@ -197,6 +197,7 @@ fn switch(
         project,
         test_runner.as_ref(),
         related_tests,
+        1,
         &mut cache,
         changed_since.as_deref(),
         &mutators,

@@ -10,6 +10,12 @@
   "testFilter": "related",
   "cache": ".mutate-cache.json",
 
+  // run the suite unmutated first and abort if it fails
+  "dryRun": true,
+  // mutants tested concurrently within a file; each Jest/Vitest run already
+  // uses its own worker pool, so raise this deliberately
+  "concurrency": 1,
+
   "thresholds": {
     "high": 80,
     "low": 60,

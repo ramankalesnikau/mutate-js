@@ -16,7 +16,8 @@ use mtr_reporters::{HtmlReporter, JsonReporter, TextReporter};
 use mtr_runner_jest::JestRunner;
 use mtr_runner_vitest::VitestRunner;
 use mtr_test_runner_api::{
-    run_with_instrumented_file, run_with_instrumented_file_targeted, DynTestRunner, RunOptions,
+    run_with_instrumented_file_parallel, run_with_instrumented_file_targeted_parallel,
+    DynTestRunner, RunOptions,
 };
 use mtr_types::{Mutant, MutantId, MutantResult, MutantStatus};
 use oxc_span::SourceType;
@@ -255,11 +256,13 @@ fn scan_and_prune(
 /// already reads it to scan for mutants, so returning it lets reporters
 /// (e.g. HTML, which highlights each mutant's `span` in context) use that
 /// same read instead of re-reading the file themselves.
+#[allow(clippy::too_many_arguments)]
 pub fn switch_one_file(
     file: &Path,
     project: &str,
     runner: &DynTestRunner,
     related_tests: bool,
+    concurrency: usize,
     cache: &mut Option<MutantCache>,
     changed_since: Option<&str>,
     mutators: &[Box<dyn Mutator>],
@@ -273,9 +276,15 @@ pub fn switch_one_file(
     if !scan.to_test.is_empty() {
         let instrumented = switch_instrument(&scan.original, &scan.to_test);
         let ids: Vec<MutantId> = scan.to_test.iter().map(|m| m.id).collect();
-        let statuses: Vec<(MutantId, MutantStatus)> =
-            run_with_instrumented_file(file, &instrumented, &ids, related_to_file, runner)
-                .unwrap_or_else(|e| panic!("failed to run instrumented file: {e}"));
+        let statuses: Vec<(MutantId, MutantStatus)> = run_with_instrumented_file_parallel(
+            file,
+            &instrumented,
+            &ids,
+            related_to_file,
+            runner,
+            concurrency,
+        )
+        .unwrap_or_else(|e| panic!("failed to run instrumented file: {e}"));
         let status_by_id: HashMap<u32, MutantStatus> =
             statuses.into_iter().map(|(id, status)| (id.0, status)).collect();
 
@@ -301,6 +310,7 @@ pub fn switch_one_file_with_coverage(
     file: &Path,
     project: &str,
     runner: &DynTestRunner,
+    concurrency: usize,
     cache: &mut Option<MutantCache>,
     changed_since: Option<&str>,
     mutators: &[Box<dyn Mutator>],
@@ -340,9 +350,14 @@ pub fn switch_one_file_with_coverage(
     if !targeted.is_empty() {
         let to_instrument: Vec<Mutant> = mutant_by_id.values().cloned().collect();
         let instrumented = switch_instrument(&scan.original, &to_instrument);
-        let statuses =
-            run_with_instrumented_file_targeted(file, &instrumented, &targeted, runner)
-                .map_err(|e| format!("failed to run instrumented file: {e}"))?;
+        let statuses = run_with_instrumented_file_targeted_parallel(
+            file,
+            &instrumented,
+            &targeted,
+            runner,
+            concurrency,
+        )
+        .map_err(|e| format!("failed to run instrumented file: {e}"))?;
 
         for (id, status) in statuses {
             let mutant = mutant_by_id.remove(&id.0).expect("status for an untargeted mutant id");
@@ -421,6 +436,7 @@ pub fn run_mutate(
                 &config.project,
                 runner.as_ref(),
                 false,
+                config.concurrency.max(1),
                 &mut cache,
                 config.changed_since.as_deref(),
                 &mutators,
@@ -430,6 +446,7 @@ pub fn run_mutate(
                 &config.project,
                 runner.as_ref(),
                 true,
+                config.concurrency.max(1),
                 &mut cache,
                 config.changed_since.as_deref(),
                 &mutators,
@@ -438,6 +455,7 @@ pub fn run_mutate(
                 file,
                 &config.project,
                 runner.as_ref(),
+                config.concurrency.max(1),
                 &mut cache,
                 config.changed_since.as_deref(),
                 &mutators,

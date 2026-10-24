@@ -19,6 +19,13 @@
       ],
       "default": null
     },
+    "concurrency": {
+      "description": "How many mutants to test concurrently within one file. Defaults to 1\n(opt-in): every Jest/Vitest invocation already fans out to its own\nworker pool, so raising this can oversubscribe CPU and contend Vite's\ndependency cache.",
+      "type": "integer",
+      "format": "uint",
+      "default": 1,
+      "minimum": 0
+    },
     "dryRun": {
       "description": "Run the test suite once, unmutated, before mutation testing and abort\nif it fails — a red suite makes every mutant result meaningless.",
       "type": "boolean",
