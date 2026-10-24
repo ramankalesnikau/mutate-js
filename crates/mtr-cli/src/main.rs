@@ -200,7 +200,7 @@ fn switch(
 ) {
     let mut cache = cache_path.as_deref().map(|p| MutantCache::load(Path::new(p)));
     let mutators = mtr_mutators::default_mutators();
-    let (results, cache_hits) = switch_one_file(
+    let (results, cache_hits, _source) = switch_one_file(
         Path::new(file),
         project,
         runner.into(),
@@ -254,7 +254,7 @@ fn mutate(config_path: Option<String>) {
         .unwrap_or_else(|e| panic!("{e}"));
 
     for file in &files {
-        let (results, hits) = switch_one_file(
+        let (results, hits, source) = switch_one_file(
             file,
             &config.project,
             config.test_runner,
@@ -273,9 +273,9 @@ fn mutate(config_path: Option<String>) {
             for result in &results {
                 reporter.on_mutant_tested(&file_key, result);
             }
-            reporter.on_file_complete(&file_key, &results);
+            reporter.on_file_complete(&file_key, &source, &results);
         }
-        per_file.push(FileMutantResults { file: file_key, mutants: results });
+        per_file.push(FileMutantResults { file: file_key, mutants: results, source });
     }
 
     let (killed, survived, other) = per_file.iter().flat_map(|f| &f.mutants).fold(

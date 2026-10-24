@@ -12,7 +12,7 @@ use mtr_config::{Config, TestRunner};
 use mtr_instrument::switch_instrument;
 use mtr_mutators::Mutator;
 use mtr_reporter_api::{FileMutantResults, Reporter};
-use mtr_reporters::{JsonReporter, TextReporter};
+use mtr_reporters::{HtmlReporter, JsonReporter, TextReporter};
 use mtr_runner_jest::JestRunner;
 use mtr_runner_vitest::VitestRunner;
 use mtr_test_runner_api::run_with_instrumented_file;
@@ -118,6 +118,7 @@ impl Default for ReporterRegistry {
         let mut registry = Self::new();
         registry.register("json", || Box::new(JsonReporter::default()));
         registry.register("text", || Box::new(TextReporter));
+        registry.register("html", || Box::new(HtmlReporter::default()));
         registry
     }
 }
@@ -157,6 +158,11 @@ pub fn scope_to_diff(
 /// the config-driven multi-file `mutate` flow. Doesn't save the cache —
 /// callers own that (so a multi-file run can do it once, aggregated across
 /// every file, instead of per file).
+///
+/// Returns the file's original source alongside its results — this function
+/// already reads it to scan for mutants, so returning it lets reporters
+/// (e.g. HTML, which highlights each mutant's `span` in context) use that
+/// same read instead of re-reading the file themselves.
 #[allow(clippy::too_many_arguments)]
 pub fn switch_one_file(
     file: &Path,
@@ -167,7 +173,7 @@ pub fn switch_one_file(
     cache: &mut Option<MutantCache>,
     changed_since: Option<&str>,
     mutators: &[Box<dyn Mutator>],
-) -> (Vec<MutantResult>, usize) {
+) -> (Vec<MutantResult>, usize, String) {
     let file_key = file.to_string_lossy().into_owned();
     let source_type = SourceType::from_path(file).unwrap_or_default();
     let original = std::fs::read_to_string(file)
@@ -228,7 +234,7 @@ pub fn switch_one_file(
         }
     }
 
-    (results, cache_hits)
+    (results, cache_hits, original)
 }
 
 #[derive(Serialize)]
@@ -272,7 +278,7 @@ pub fn run_mutate(config: &Config) -> Result<MutateSummary, String> {
         MutatorRegistry::default().build(&config.mutator_packs, &config.excluded_mutators)?;
 
     for file in &files {
-        let (results, hits) = switch_one_file(
+        let (results, hits, source) = switch_one_file(
             file,
             &config.project,
             config.test_runner,
@@ -286,7 +292,7 @@ pub fn run_mutate(config: &Config) -> Result<MutateSummary, String> {
             continue;
         }
         cache_hits_total += hits;
-        per_file.push(FileMutantResults { file: file.display().to_string(), mutants: results });
+        per_file.push(FileMutantResults { file: file.display().to_string(), mutants: results, source });
     }
 
     let (killed, survived, other) = per_file.iter().flat_map(|f| &f.mutants).fold(
@@ -374,8 +380,8 @@ mod tests {
     }
 
     #[test]
-    fn reporter_registry_includes_json_and_text_by_default() {
-        assert_eq!(ReporterRegistry::default().names(), vec!["json", "text"]);
+    fn reporter_registry_includes_json_text_and_html_by_default() {
+        assert_eq!(ReporterRegistry::default().names(), vec!["html", "json", "text"]);
     }
 
     #[test]
