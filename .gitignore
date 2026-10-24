@@ -5,3 +5,9 @@ node_modules
 *.node
 
 .DS_Store
+
+# left behind by `jest --coverage` / `vitest --coverage` runs (including
+# this project's own coverage-collection tests, which run real jest/vitest
+# processes against the fixtures)
+coverage/
+
