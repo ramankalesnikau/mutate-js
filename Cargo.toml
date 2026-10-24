@@ -16,6 +16,7 @@ mtr-mutators-react = { path = "crates/mtr-mutators-react" }
 mtr-runner-jest = { path = "crates/mtr-runner-jest" }
 mtr-runner-vitest = { path = "crates/mtr-runner-vitest" }
 mtr-test-runner-api = { path = "crates/mtr-test-runner-api" }
+mtr-coverage = { path = "crates/mtr-coverage" }
 mtr-cache = { path = "crates/mtr-cache" }
 mtr-config = { path = "crates/mtr-config" }
 mtr-reporter-api = { path = "crates/mtr-reporter-api" }

@@ -1,0 +1,9 @@
+[package]
+name = "mtr-coverage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mtr-types.workspace = true
+mtr-test-runner-api.workspace = true

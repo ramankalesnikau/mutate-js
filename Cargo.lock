@@ -416,6 +416,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mtr-coverage"
+version = "0.0.1"
+dependencies = [
+ "mtr-test-runner-api",
+ "mtr-types",
+]
+
+[[package]]
 name = "mtr-instrument"
 version = "0.0.1"
 dependencies = [
