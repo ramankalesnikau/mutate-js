@@ -36,6 +36,7 @@ impl Reporter for TextReporter {
             MutantStatus::Survived => "SURVIVED",
             MutantStatus::Timeout => "timeout",
             MutantStatus::Error => "error",
+            MutantStatus::NoCoverage => "NO-COV",
         };
         println!(
             "{label:<9} {file}  {} `{}` -> `{}`",
@@ -108,6 +109,7 @@ fn status_class(status: MutantStatus) -> &'static str {
         MutantStatus::Survived => "survived",
         MutantStatus::Timeout => "timeout",
         MutantStatus::Error => "error",
+        MutantStatus::NoCoverage => "nocoverage",
     }
 }
 
@@ -117,6 +119,7 @@ fn status_label(status: MutantStatus) -> &'static str {
         MutantStatus::Survived => "Survived",
         MutantStatus::Timeout => "Timeout",
         MutantStatus::Error => "Error",
+        MutantStatus::NoCoverage => "No coverage",
     }
 }
 
@@ -140,7 +143,8 @@ fn group_by_span(results: &[MutantResult]) -> Vec<(mtr_types::Span, Vec<&MutantR
 
 /// The worst (most test-quality-relevant) status in a group drives the
 /// highlight color: a survived mutant is the signal worth seeing first, so
-/// it outranks a killed one at the same site.
+/// it outranks a killed one at the same site. `NoCoverage` outranks even
+/// `Survived` — nothing even tried is a stronger signal than "ran and missed."
 fn worst_status(group: &[&MutantResult]) -> MutantStatus {
     group
         .iter()
@@ -150,6 +154,7 @@ fn worst_status(group: &[&MutantResult]) -> MutantStatus {
             MutantStatus::Timeout => 1,
             MutantStatus::Error => 2,
             MutantStatus::Survived => 3,
+            MutantStatus::NoCoverage => 4,
         })
         .unwrap_or(MutantStatus::Killed)
 }
@@ -198,16 +203,17 @@ fn render_source(source: &str, results: &[MutantResult]) -> String {
 }
 
 fn render_report(files: &[FileMutantResults], score: f64) -> String {
-    let (killed, survived, timeout, error) = files.iter().flat_map(|f| &f.mutants).fold(
-        (0u32, 0u32, 0u32, 0u32),
-        |(k, s, t, e), r| match r.status {
-            MutantStatus::Killed => (k + 1, s, t, e),
-            MutantStatus::Survived => (k, s + 1, t, e),
-            MutantStatus::Timeout => (k, s, t + 1, e),
-            MutantStatus::Error => (k, s, t, e + 1),
+    let (killed, survived, timeout, error, no_coverage) = files.iter().flat_map(|f| &f.mutants).fold(
+        (0u32, 0u32, 0u32, 0u32, 0u32),
+        |(k, s, t, e, n), r| match r.status {
+            MutantStatus::Killed => (k + 1, s, t, e, n),
+            MutantStatus::Survived => (k, s + 1, t, e, n),
+            MutantStatus::Timeout => (k, s, t + 1, e, n),
+            MutantStatus::Error => (k, s, t, e + 1, n),
+            MutantStatus::NoCoverage => (k, s, t, e, n + 1),
         },
     );
-    let total = killed + survived + timeout + error;
+    let total = killed + survived + timeout + error + no_coverage;
 
     let mut files_html = String::new();
     for file in files {
@@ -235,11 +241,12 @@ fn render_report(files: &[FileMutantResults], score: f64) -> String {
   mark.survived {{ background: #f7c5c5; }}
   mark.timeout {{ background: #f7e8a4; }}
   mark.error {{ background: #d9d9d9; }}
+  mark.nocoverage {{ background: #d6e4ff; }}
 </style>
 </head>
 <body>
 <h1>Mutation report</h1>
-<p class="summary">Score: <strong>{score:.1}%</strong> — {killed} killed, {survived} survived, {timeout} timeout, {error} error ({total} mutant(s) across {file_count} file(s))</p>
+<p class="summary">Score: <strong>{score:.1}%</strong> — {killed} killed, {survived} survived, {timeout} timeout, {error} error, {no_coverage} no coverage ({total} mutant(s) across {file_count} file(s))</p>
 {files_html}
 </body>
 </html>
@@ -306,5 +313,27 @@ mod tests {
         assert!(html.contains("100.0%"));
         assert!(html.contains("src/a.js"));
         assert!(html.contains("1 killed"));
+    }
+
+    #[test]
+    fn render_report_counts_no_coverage_separately() {
+        let files = vec![FileMutantResults {
+            file: "src/a.js".to_string(),
+            source: "const a = 1 + 2;".to_string(),
+            mutants: vec![mutant_result(0, "Arith", (12, 13), "+", "-", MutantStatus::NoCoverage)],
+        }];
+        let html = render_report(&files, 0.0);
+        assert!(html.contains("1 no coverage"));
+    }
+
+    #[test]
+    fn no_coverage_outranks_survived_in_a_shared_span_group() {
+        let source = "const x = true;";
+        let results = vec![
+            mutant_result(0, "A", (10, 14), "true", "false", MutantStatus::Survived),
+            mutant_result(1, "B", (10, 14), "true", "false", MutantStatus::NoCoverage),
+        ];
+        let html = render_source(source, &results);
+        assert!(html.contains("class=\"mutant nocoverage\""));
     }
 }

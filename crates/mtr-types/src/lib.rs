@@ -29,6 +29,12 @@ pub enum MutantStatus {
     Survived,
     Timeout,
     Error,
+    /// No test touched this mutant's `enclosing_span`, per coverage
+    /// analysis — the test process was never even spawned for it. Reported
+    /// distinctly from `Survived` (a test suite that ran and missed) for
+    /// transparency, though it counts the same way in an aggregate score:
+    /// an uncovered mutant is exactly as bad as one the suite missed.
+    NoCoverage,
 }
 
 #[derive(Debug, Clone, Serialize)]

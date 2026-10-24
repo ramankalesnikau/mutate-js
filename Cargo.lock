@@ -509,6 +509,8 @@ name = "mtr-test-runner-api"
 version = "0.0.1"
 dependencies = [
  "mtr-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

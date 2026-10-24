@@ -6,6 +6,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@vitest/coverage-istanbul": "^2.1.9",
     "vitest": "^2"
   }
 }
