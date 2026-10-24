@@ -1,9 +1,12 @@
+use std::collections::{HashMap, HashSet};
+
 use mtr_types::{Mutant, MutantId, MutantKind, Span};
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     Argument, ArrayExpression, ArrowFunctionBody, ArrowFunctionExpression, AssignmentExpression,
     BinaryExpression, BlockStatement, BooleanLiteral, CallExpression, ComputedMemberExpression,
-    ConditionalExpression, Directive, Expression, ExportAllDeclaration, ExportFromDeclaration,
+    Comment, CommentKind, ConditionalExpression, Directive, Expression, ExportAllDeclaration,
+    ExportFromDeclaration,
     Function, ImportDeclaration, ImportExpression, JSXAttribute, LogicalExpression,
     ObjectExpression, RegExpLiteral, StaticMemberExpression, StringLiteral, UnaryExpression,
     UpdateExpression,
@@ -968,7 +971,115 @@ pub fn scan_source_with_mutators(
     let ret = Parser::new(&allocator, source, source_type).parse();
     let mut scanner = MutantScanner::new(mutators, source);
     scanner.visit_program(&ret.program);
-    scanner.mutants
+
+    let directives = IgnoreDirectives::from_comments(source, &ret.program.comments);
+    let mut mutants = scanner.mutants;
+    mutants.retain(|m| !directives.suppressed(line_at(source, m.span.start), &m.operator));
+    mutants
+}
+
+fn line_at(source: &str, offset: u32) -> u32 {
+    source[..offset as usize].matches('\n').count() as u32 + 1
+}
+
+#[derive(Debug, Clone)]
+enum BlockState {
+    Disabled(Option<HashSet<String>>),
+    Enabled,
+}
+
+/// `// mutate-js disable-line`, `disable-next-line`, `disable` / `restore`,
+/// each with an optional operator-name allowlist. Parsed from the file's own
+/// comments once, then queried per mutant. Directives are matched only when
+/// the comment body starts with exactly `mutate-js`, so comments aimed at
+/// other tools are left alone.
+#[derive(Debug, Default)]
+struct IgnoreDirectives {
+    /// Target line -> operators to suppress (`None` = all).
+    per_line: HashMap<u32, Option<HashSet<String>>>,
+    /// Ordered `disable`/`restore` markers; the last one at or before a line
+    /// decides that line's state.
+    blocks: Vec<(u32, BlockState)>,
+}
+
+impl IgnoreDirectives {
+    fn from_comments(source: &str, comments: &[Comment]) -> Self {
+        let mut directives = Self::default();
+        let mut ordered: Vec<&Comment> = comments.iter().collect();
+        ordered.sort_by_key(|c| c.span.start);
+
+        for comment in ordered {
+            let raw = &source[comment.span.start as usize..comment.span.end as usize];
+            let body = match comment.kind {
+                CommentKind::Line => raw.strip_prefix("//").unwrap_or(raw),
+                _ => raw
+                    .strip_prefix("/*")
+                    .and_then(|rest| rest.strip_suffix("*/"))
+                    .unwrap_or(raw),
+            };
+
+            let mut parts = body.split_whitespace();
+            if parts.next() != Some("mutate-js") {
+                continue;
+            }
+            let Some(command) = parts.next() else { continue };
+            let operators: HashSet<String> = parts.map(str::to_string).collect();
+            let set = if operators.is_empty() { None } else { Some(operators) };
+            let line = line_at(source, comment.span.start);
+
+            match command {
+                "disable-next-line" => directives.add_line(line + 1, set),
+                "disable-line" => directives.add_line(line, set),
+                "disable" => directives.blocks.push((line, BlockState::Disabled(set))),
+                "restore" => directives.blocks.push((line, BlockState::Enabled)),
+                // Unknown/malformed directives are ignored rather than
+                // treated as "disable everything" — a typo must not silently
+                // hide mutants.
+                _ => {}
+            }
+        }
+        directives
+    }
+
+    fn add_line(&mut self, line: u32, set: Option<HashSet<String>>) {
+        match self.per_line.entry(line) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(set);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
+                // Any unscoped directive wins; otherwise union the names.
+                match (entry.get_mut(), set) {
+                    (slot, None) => *slot = None,
+                    (Some(existing), Some(names)) => existing.extend(names),
+                    (None, Some(_)) => {}
+                }
+            }
+        }
+    }
+
+    fn suppressed(&self, line: u32, operator: &str) -> bool {
+        if let Some(set) = self.per_line.get(&line) {
+            if matches_operator(set, operator) {
+                return true;
+            }
+        }
+        let mut state: Option<&BlockState> = None;
+        for (marker_line, block_state) in &self.blocks {
+            if *marker_line <= line {
+                state = Some(block_state);
+            } else {
+                break;
+            }
+        }
+        matches!(state, Some(BlockState::Disabled(set)) if matches_operator(set, operator))
+    }
+}
+
+fn matches_operator(set: &Option<HashSet<String>>, operator: &str) -> bool {
+    match set {
+        None => true,
+        Some(names) => names.is_empty() || names.contains(operator),
+    }
 }
 
 /// Replace `mutant`'s span in `source` with its replacement text — the exact
@@ -1253,5 +1364,48 @@ const h = () => 4;
     fn regex_literal_ignores_an_already_mutated_regex() {
         let mutants = scan_source("const re = /x/;", SourceType::mjs());
         assert!(only(&mutants, "Regex").is_empty());
+    }
+
+    #[test]
+    fn disable_next_line_suppresses_the_following_line_only() {
+        let source = "const a = 1 + 2;\n// mutate-js disable-next-line\nconst b = 1 + 2;\nconst c = 1 + 2;\n";
+        let mutants = scan_source(source, SourceType::ts());
+        assert_eq!(only(&mutants, "ArithmeticOperator").len(), 2, "{mutants:#?}");
+    }
+
+    #[test]
+    fn disable_line_suppresses_mutants_on_the_same_line() {
+        let source = "const a = 1 + 2; // mutate-js disable-line\nconst b = 1 + 2;\n";
+        let mutants = scan_source(source, SourceType::ts());
+        assert_eq!(only(&mutants, "ArithmeticOperator").len(), 1, "{mutants:#?}");
+    }
+
+    #[test]
+    fn block_disable_and_restore_scope_a_region() {
+        let source = "// mutate-js disable\nconst a = 1 + 2;\n// mutate-js restore\nconst b = 1 + 2;\n";
+        let mutants = scan_source(source, SourceType::ts());
+        assert_eq!(only(&mutants, "ArithmeticOperator").len(), 1, "{mutants:#?}");
+    }
+
+    #[test]
+    fn directive_can_be_scoped_to_named_operators() {
+        let source = "// mutate-js disable-next-line StringLiteral\nconst s = \"x\" + 1;\n";
+        let mutants = scan_source(source, SourceType::ts());
+        assert!(only(&mutants, "StringLiteral").is_empty(), "{mutants:#?}");
+        assert_eq!(only(&mutants, "ArithmeticOperator").len(), 1, "{mutants:#?}");
+    }
+
+    #[test]
+    fn restore_without_a_matching_disable_is_a_no_op() {
+        let source = "// mutate-js restore\nconst a = 1 + 2;\n";
+        let mutants = scan_source(source, SourceType::ts());
+        assert_eq!(only(&mutants, "ArithmeticOperator").len(), 1);
+    }
+
+    #[test]
+    fn comments_aimed_at_other_tools_are_ignored() {
+        let source = "// Stryker disable-next-line\nconst a = 1 + 2;\n";
+        let mutants = scan_source(source, SourceType::ts());
+        assert_eq!(only(&mutants, "ArithmeticOperator").len(), 1);
     }
 }
