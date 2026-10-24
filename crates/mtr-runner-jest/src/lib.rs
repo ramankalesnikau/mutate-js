@@ -1,6 +1,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -56,14 +57,22 @@ pub struct JestRunner {
     timeout: Duration,
 }
 
+/// `std::process::id()` alone collides when multiple `JestRunner`s run
+/// concurrently in the same process — e.g. parallel `cargo test` threads —
+/// since they'd all compute the same temp path and race on write/read/delete
+/// of that one file. This counter, combined with the pid, keeps every call
+/// to `write_coverage_setup` unique regardless of threading.
+static COVERAGE_SETUP_COUNTER: AtomicU32 = AtomicU32::new(0);
+
 impl JestRunner {
     pub fn new(project_dir: impl Into<PathBuf>, timeout: Duration) -> Self {
         Self { project_dir: project_dir.into(), timeout }
     }
 
     fn write_coverage_setup(&self) -> std::io::Result<PathBuf> {
-        let path =
-            std::env::temp_dir().join(format!("mtr-jest-coverage-{}.cjs", std::process::id()));
+        let unique = COVERAGE_SETUP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir()
+            .join(format!("mtr-jest-coverage-{}-{unique}.cjs", std::process::id()));
         std::fs::write(&path, JEST_COVERAGE_SETUP)?;
         Ok(path)
     }
@@ -187,6 +196,7 @@ fn classify(stdout: &str, exit_success: bool) -> MutantStatus {
 mod tests {
     use super::*;
     use std::path::Path;
+    use std::sync::Mutex;
     use std::time::Duration;
 
     fn fixture_dir() -> std::path::PathBuf {
@@ -195,8 +205,15 @@ mod tests {
             .expect("fixture dir should exist")
     }
 
+    // `cargo test` runs these in parallel by default, but every test here
+    // spawns a real `jest` process against the same fixture directory —
+    // concurrent runs race on its `coverage/` output dir, corrupting each
+    // other.
+    static FIXTURE_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn collect_coverage_reports_each_tests_touched_statements() {
+        let _guard = FIXTURE_LOCK.lock().unwrap();
         let project = fixture_dir();
         let runner = JestRunner::new(&project, Duration::from_secs(30));
         let coverage = runner.collect_coverage(None).unwrap();
@@ -217,6 +234,7 @@ mod tests {
 
     #[test]
     fn collect_coverage_respects_related_to_file_as_a_prefilter() {
+        let _guard = FIXTURE_LOCK.lock().unwrap();
         let project = fixture_dir();
         let file = project.join("src/math.js");
         let runner = JestRunner::new(&project, Duration::from_secs(30));
@@ -231,6 +249,7 @@ mod tests {
 
     #[test]
     fn run_with_only_tests_runs_exactly_the_named_test() {
+        let _guard = FIXTURE_LOCK.lock().unwrap();
         let project = fixture_dir();
         let runner = JestRunner::new(&project, Duration::from_secs(30));
         let tests = vec!["sum adds two numbers".to_string()];
@@ -240,6 +259,7 @@ mod tests {
 
     #[test]
     fn run_with_only_tests_accepts_multiple_names() {
+        let _guard = FIXTURE_LOCK.lock().unwrap();
         let project = fixture_dir();
         let runner = JestRunner::new(&project, Duration::from_secs(30));
         let tests =

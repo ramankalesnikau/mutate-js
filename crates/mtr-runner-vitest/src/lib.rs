@@ -1,6 +1,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -69,6 +70,13 @@ const USER_CONFIG_CANDIDATES: &[&str] = &[
     "vite.config.mjs",
 ];
 
+/// `std::process::id()` alone collides when multiple `VitestRunner`s run
+/// concurrently in the same process — e.g. parallel `cargo test` threads —
+/// since they'd all compute the same temp paths and race on write/read/delete
+/// of those files. This counter, combined with the pid, keeps every call to
+/// `write_coverage_config` unique regardless of threading.
+static COVERAGE_CONFIG_COUNTER: AtomicU32 = AtomicU32::new(0);
+
 impl VitestRunner {
     pub fn new(project_dir: impl Into<PathBuf>, timeout: Duration) -> Self {
         Self { project_dir: project_dir.into(), timeout }
@@ -91,7 +99,9 @@ impl VitestRunner {
     ///   files deep in transitive deps that have no configured loader).
     fn write_coverage_config(&self) -> std::io::Result<(PathBuf, PathBuf)> {
         let pid = std::process::id();
-        let setup_path = self.project_dir.join(format!(".mtr-vitest-coverage-setup-{pid}.mjs"));
+        let unique = COVERAGE_CONFIG_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let setup_path =
+            self.project_dir.join(format!(".mtr-vitest-coverage-setup-{pid}-{unique}.mjs"));
         std::fs::write(&setup_path, VITEST_COVERAGE_SETUP)?;
 
         let user_config = USER_CONFIG_CANDIDATES
@@ -120,7 +130,8 @@ impl VitestRunner {
                  export default defineConfig({overrides});\n"
             ),
         };
-        let config_path = self.project_dir.join(format!(".mtr-vitest-coverage-{pid}.config.mjs"));
+        let config_path =
+            self.project_dir.join(format!(".mtr-vitest-coverage-{pid}-{unique}.config.mjs"));
         std::fs::write(&config_path, config_source)?;
 
         Ok((config_path, setup_path))
@@ -277,6 +288,7 @@ fn classify(stdout: &str, exit_success: bool) -> MutantStatus {
 mod tests {
     use super::*;
     use std::path::Path;
+    use std::sync::Mutex;
 
     fn fixture_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -285,8 +297,16 @@ mod tests {
             .expect("fixture dir should exist")
     }
 
+    // `cargo test` runs these in parallel by default, but every test here
+    // spawns a real `vitest` process against the same fixture directory —
+    // concurrent runs race on its `coverage/` output dir and Vite's cache,
+    // corrupting each other (confirmed: one run's generated coverage config
+    // got deleted mid-read by another run's cleanup).
+    static FIXTURE_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn collect_coverage_reports_each_tests_touched_statements() {
+        let _guard = FIXTURE_LOCK.lock().unwrap();
         let project = fixture_dir();
         let runner = VitestRunner::new(&project, Duration::from_secs(30));
         let coverage = runner.collect_coverage(None).unwrap();
@@ -307,6 +327,7 @@ mod tests {
 
     #[test]
     fn collect_coverage_respects_related_to_file_as_a_prefilter() {
+        let _guard = FIXTURE_LOCK.lock().unwrap();
         let project = fixture_dir();
         let file = project.join("src/math.js");
         let runner = VitestRunner::new(&project, Duration::from_secs(30));
@@ -321,6 +342,7 @@ mod tests {
 
     #[test]
     fn run_with_only_tests_runs_exactly_the_named_test() {
+        let _guard = FIXTURE_LOCK.lock().unwrap();
         let project = fixture_dir();
         let runner = VitestRunner::new(&project, Duration::from_secs(30));
         let tests = vec!["sum adds two numbers".to_string()];
@@ -330,6 +352,7 @@ mod tests {
 
     #[test]
     fn run_with_only_tests_accepts_multiple_names() {
+        let _guard = FIXTURE_LOCK.lock().unwrap();
         let project = fixture_dir();
         let runner = VitestRunner::new(&project, Duration::from_secs(30));
         let tests =
