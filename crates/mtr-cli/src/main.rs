@@ -4,13 +4,12 @@ use std::time::Duration;
 use clap::{Parser as ClapParser, Subcommand};
 use mtr_cache::{mutant_signature, MutantCache};
 use mtr_core::{
-    scan_files, scope_to_diff, switch_one_file, switch_one_file_with_coverage, MutatorRegistry,
-    ReporterRegistry, TestRunnerRegistry,
+    scan_files, scope_to_diff, switch_one_file, MutatorRegistry, ReporterRegistry,
+    TestRunnerRegistry,
 };
 use mtr_mutators::apply_mutant;
-use mtr_reporter_api::FileMutantResults;
 use mtr_test_runner_api::run_with_file_swapped;
-use mtr_types::{MutantResult, MutantStatus};
+use mtr_types::MutantResult;
 use oxc_span::SourceType;
 use schemars::schema_for;
 
@@ -218,107 +217,40 @@ fn mutate(config_path: Option<String>) {
         mtr_config::Config::default()
     };
 
-    let ignore_globs: Vec<glob::Pattern> = config
-        .ignore_patterns
-        .iter()
-        .map(|p| glob::Pattern::new(p).unwrap_or_else(|e| panic!("invalid ignore pattern `{p}`: {e}")))
-        .collect();
-
-    let mut files: Vec<PathBuf> = Vec::new();
-    for pattern in &config.mutate {
-        for entry in glob::glob(pattern).unwrap_or_else(|e| panic!("invalid glob `{pattern}`: {e}")) {
-            let path = entry.expect("failed to read glob entry");
-            if !ignore_globs.iter().any(|g| g.matches_path(&path)) {
-                files.push(path);
-            }
-        }
-    }
-
-    let timeout = Duration::from_secs(config.timeout_secs);
-    let mut cache = config.cache.as_deref().map(|p| MutantCache::load(Path::new(p)));
-    let mut cache_hits_total = 0;
-    let mut per_file: Vec<FileMutantResults> = Vec::new();
     let mut reporters = ReporterRegistry::default()
         .build(&config.reporters)
         .unwrap_or_else(|e| panic!("{e}"));
-    let mutators = MutatorRegistry::default()
-        .build(&config.mutator_packs, &config.excluded_mutators)
-        .unwrap_or_else(|e| panic!("{e}"));
-    let test_runner = TestRunnerRegistry::default()
-        .build(&config.test_runner, &config.project, timeout)
-        .unwrap_or_else(|e| panic!("{e}"));
 
-    for file in &files {
-        let (results, hits, source) = match config.test_filter.as_str() {
-            "all" => switch_one_file(
-                file,
-                &config.project,
-                test_runner.as_ref(),
-                false,
-                &mut cache,
-                config.changed_since.as_deref(),
-                &mutators,
-            ),
-            "related" => switch_one_file(
-                file,
-                &config.project,
-                test_runner.as_ref(),
-                true,
-                &mut cache,
-                config.changed_since.as_deref(),
-                &mutators,
-            ),
-            "coverage" => switch_one_file_with_coverage(
-                file,
-                &config.project,
-                test_runner.as_ref(),
-                &mut cache,
-                config.changed_since.as_deref(),
-                &mutators,
-            )
-            .unwrap_or_else(|e| panic!("{e}")),
-            other => panic!("unknown test filter `{other}` (available: all, related, coverage)"),
-        };
-        if results.is_empty() {
-            continue;
+    let summary = match mtr_core::run_mutate(&config, &mut reporters) {
+        Ok(summary) => summary,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
         }
-        cache_hits_total += hits;
-        let file_key = file.display().to_string();
-        for reporter in &mut reporters {
-            for result in &results {
-                reporter.on_mutant_tested(&file_key, result);
-            }
-            reporter.on_file_complete(&file_key, &source, &results);
-        }
-        per_file.push(FileMutantResults { file: file_key, mutants: results, source });
-    }
-
-    let (killed, survived, other) = per_file.iter().flat_map(|f| &f.mutants).fold(
-        (0u32, 0u32, 0u32),
-        |(k, s, o), r| match r.status {
-            MutantStatus::Killed => (k + 1, s, o),
-            MutantStatus::Survived | MutantStatus::NoCoverage => (k, s + 1, o),
-            _ => (k, s, o + 1),
-        },
-    );
-    let tested = killed + survived;
-    let score = if tested > 0 { f64::from(killed) / f64::from(tested) * 100.0 } else { 100.0 };
-    let total_mutants: usize = per_file.iter().map(|f| f.mutants.len()).sum();
-
-    for reporter in &mut reporters {
-        reporter.on_run_complete(&per_file, score);
-        reporter.wrap_up();
-    }
+    };
 
     eprintln!(
-        "Mutation score: {score:.1}% ({killed} killed, {survived} survived, {other} other) across {} file(s)",
-        per_file.len()
+        "Mutation score: {:.1}% ({} killed, {} survived, {} other) across {} file(s)",
+        summary.score,
+        summary.killed,
+        summary.survived,
+        summary.other,
+        summary.files.len()
     );
-    save_cache_and_report(cache.as_ref(), config.cache.as_deref(), cache_hits_total, total_mutants);
+    if config.cache.is_some() {
+        eprintln!(
+            "cache: {} hit(s), {} tested",
+            summary.cache_hits,
+            summary.total_mutants - summary.cache_hits
+        );
+    }
 
     if let Some(break_score) = config.thresholds.as_ref().and_then(|t| t.break_score) {
-        if score < break_score {
-            eprintln!("Mutation score {score:.1}% is below break threshold {break_score}%");
+        if summary.score < break_score {
+            eprintln!(
+                "Mutation score {:.1}% is below break threshold {break_score}%",
+                summary.score
+            );
             std::process::exit(1);
         }
     }

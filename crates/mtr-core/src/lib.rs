@@ -372,7 +372,10 @@ pub struct MutateSummary {
 /// score, and persists the cache — everything the `mutate` CLI command and
 /// the napi binding both need, minus reporters and process exit codes,
 /// which are presentation concerns owned by the caller.
-pub fn run_mutate(config: &Config) -> Result<MutateSummary, String> {
+pub fn run_mutate(
+    config: &Config,
+    reporters: &mut [Box<dyn Reporter>],
+) -> Result<MutateSummary, String> {
     let ignore_globs: Vec<glob::Pattern> = config
         .ignore_patterns
         .iter()
@@ -449,7 +452,14 @@ pub fn run_mutate(config: &Config) -> Result<MutateSummary, String> {
             continue;
         }
         cache_hits_total += hits;
-        per_file.push(FileMutantResults { file: file.display().to_string(), mutants: results, source });
+        let file_key = file.display().to_string();
+        for reporter in reporters.iter_mut() {
+            for result in &results {
+                reporter.on_mutant_tested(&file_key, result);
+            }
+            reporter.on_file_complete(&file_key, &source, &results);
+        }
+        per_file.push(FileMutantResults { file: file_key, mutants: results, source });
     }
 
     let (killed, survived, other) = per_file.iter().flat_map(|f| &f.mutants).fold(
@@ -466,6 +476,11 @@ pub fn run_mutate(config: &Config) -> Result<MutateSummary, String> {
     let tested = killed + survived;
     let score = if tested > 0 { f64::from(killed) / f64::from(tested) * 100.0 } else { 100.0 };
     let total_mutants: usize = per_file.iter().map(|f| f.mutants.len()).sum();
+
+    for reporter in reporters.iter_mut() {
+        reporter.on_run_complete(&per_file, score);
+        reporter.wrap_up();
+    }
 
     if let Some(path) = config.cache.as_deref() {
         if let Some(cache) = &cache {

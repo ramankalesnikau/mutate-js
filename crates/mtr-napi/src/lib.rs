@@ -37,6 +37,7 @@ pub fn mutate(config_json: String) -> Result<String> {
     let config: mtr_config::Config = serde_json::from_str(&config_json)
         .map_err(|e| Error::new(Status::InvalidArg, format!("invalid config: {e}")))?;
     let summary =
-        mtr_core::run_mutate(&config).map_err(|e| Error::new(Status::GenericFailure, e))?;
+        mtr_core::run_mutate(&config, &mut [])
+            .map_err(|e| Error::new(Status::GenericFailure, e))?;
     serde_json::to_string(&summary).map_err(|e| Error::new(Status::GenericFailure, e.to_string()))
 }
